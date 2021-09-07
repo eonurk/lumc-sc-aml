@@ -1,0 +1,329 @@
+---
+title: "sc-AML-clean"
+author: "EO Karakaslar"
+date: "4/14/2021"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LUMC/")
+```
+
+```{r libraries, warning=FALSE, message=FALSE}
+library(plyr)
+library(cinaR)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(glmnet)
+library(ggpubr)
+library(Seurat)
+library(readxl)
+library(ggplot2)
+library(viridis)
+library(pheatmap)
+library(jsonlite)
+library(tradeSeq)
+library(slingshot)
+library(paletteer)
+library(grDevices)
+library(data.table)
+library(RColorBrewer)
+library(SummarizedExperiment)
+library(SingleCellExperiment)
+
+source("utils/CIBERSORT.R")
+
+theme.gg <- theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+```{r}
+# slingshot object
+sce <- readRDS("data/slingshot_vanGalen.RDS")
+
+# reduced dim
+sce.umap <- reducedDim(sce, type = "UMAP")
+
+# 462 genes from Triana et al., 2021
+abseq.genelist <- read_excel("data/abseq_462_gene_list.xlsx")
+
+# count matrix (genes x cells)
+counts <- as.matrix(sce@assays@data$counts)
+
+# 454 intersected genes (van galen - triana)
+intersected.genes <- intersect(rownames(counts), abseq.genelist$Gene)
+
+# load fitgam profile of vangalen data 
+sce.gam <- readRDS("data/tradeseq_vangalen.RDS")
+```
+
+```{r}
+# predicted values of 454 genes over pseudotimes for 6 trajectories
+predicted.vals <- tradeSeq::predictSmooth(sce.gam, gene = intersected.genes)
+
+a <- reshape2::acast(data = predicted.vals, gene ~ lineage + time , value.var = "yhat")
+
+pseudotime.proportions.all.TCGA <- CIBERSORT(sig_matrix = as.matrix(a), mixture_file = TCGA, perm = 100, QN = F)
+
+pv.list <- split(predicted.vals, predicted.vals$lineage)
+eps <- 10e-5
+pv.df <- lapply(pv.list, function(x){
+  df <- reshape2::acast(data = x, gene ~ time, value.var = "yhat")
+  df <- df[complete.cases(df),]
+  df[df < eps] <- 0
+  df <- df[!(apply (df, 1, sd) < eps),]
+})
+```
+
+
+
+```{r TCGA data}
+TCGA <- read.csv("data/TCGA/laml.rnaseq.179_v1.0_gaf2.0_read_count_matrix.txt.tcgaID.txt", sep = "\t")
+
+# Just get the gene symbols
+TCGA$GeneID <- strsplit(TCGA$GeneID, "|", fixed = T) %>% map_chr(1)
+
+# Remove unknown 
+TCGA <- TCGA[TCGA$GeneID != "?", ]
+
+# Order genes according to their standard deviation in decreasing order
+TCGA <- TCGA [rev(order(apply(TCGA[,-1], 1, stats::sd))),]
+
+# Remove duplicated genes
+TCGA <- TCGA [!duplicated(TCGA[,1]),]
+
+# Make the gene names the row names
+rownames(TCGA) <- TCGA[,1]
+
+# Remove the genes
+TCGA <- TCGA[,-1]
+```
+
+
+```{r TCGA meta data}
+TCGA.meta <- read.csv("data/TCGA/clinical_patient_laml.tsv", sep = "\t")
+
+TCGA.meta[,1]<- gsub("-", ".",TCGA.meta[,1])
+
+# get only patients with RNA-seq
+TCGA.meta <- TCGA.meta[TCGA.meta[,1] %in% colnames(TCGA),]
+
+# sort to same order to data
+TCGA.meta <- TCGA.meta[match(colnames(TCGA),TCGA.meta[,1]),]
+
+rownames(TCGA.meta) <- TCGA.meta[,1]
+
+# separate abnormalities into different columns
+TCGA.meta <- TCGA.meta %>% separate("cytogenetic_abnormality", c(paste0("cytogenetic_abnormality", c(1:4))), sep = "\\|")
+```
+
+
+```{r}
+# run CIBERSORT per trajectory
+# pseudotime.proportions.TCGA <- lapply(pv.df, function(x) CIBERSORT(sig_matrix = x, mixture_file = TCGA, perm = 100, QN = F))
+
+pseudotime.proportions.TCGA <- readRDS("cache/Pseudotime_proportions_TCGA.RDS")
+pseudotime.proportions.TCGA <- lapply(pseudotime.proportions.TCGA, function(x){x[,1:100]})
+
+
+
+# cytogenetic changes
+cyto.loc <- paste0("cytogenetic_abnormality", c(1:4, "_other"))
+
+# remove weird stuff from cytogenetic list
+cyto.list <- unique(as.vector(t(TCGA.meta[,cyto.loc])))
+cyto.list <- setdiff(cyto.list, c("NA", "[Not Available]", "no", "No", "Yes", "Normal", "NO", NA))
+  
+TCGA.cyto <- TCGA.meta[,cyto.loc]
+
+cyto.annotations <- lapply(cyto.list, function(x){
+  ifelse(rowSums(TCGA.cyto == x, na.rm = T) > 0, 1, 0)
+}) %>% do.call(cbind, .) %>% as.data.frame
+
+colnames(cyto.annotations) <- cyto.list
+rownames(cyto.annotations) <- rownames(TCGA.meta)
+
+colnames(cyto.annotations)[8] <- "Complex"
+
+
+pdf("output/TCGA_CIBERSORT_time_analyses_cytogenetic_meta_data.pdf", width =10, height = 10)
+lapply(pseudotime.proportions.TCGA, function(p){
+  
+  breaksList = seq(0,0.1, by = .001)
+  pheatmap.colors <- colorRampPalette(rev(brewer.pal(n = 7, name = "PuOr")))(length(breaksList))
+  
+  pheatmap(p[,1:100], cluster_cols = F, color = pheatmap.colors, annotation_row = cyto.annotations,
+           breaks = breaksList, show_rownames = T, show_colnames = F, legend = T, annotation_legend = F, fontsize = 6)
+})
+dev.off()
+
+saveRDS(pseudotime.proportions.TCGA, file = "cache/Pseudotime_proportions_TCGA.RDS")
+```
+
+
+```{r 4 studies t-sne}
+pseudotime.proportions.all <- readRDS("cache/pseudotime_proportions_all.RDS")
+pseudotime.proportions.all <- lapply(pseudotime.proportions.all, function(x){x[,1:100]})
+
+meta.all <- read.csv("data/Jeppe/meta_GDC_LUMC_AML.csv", row.names = 1)
+    
+pd <- meta.all$primary_diagnosis
+
+pd[is.na(pd)] <- "Unknown"
+
+cyto.annotations <- model.matrix(~ 0 + pd) %>% as.data.frame
+
+
+rownames(cyto.annotations) <- meta.all[,"ID"]
+colnames(cyto.annotations) <- gsub("pd", "", colnames(cyto.annotations))
+
+
+df.prop.all <- pseudotime.proportions.all[[5]]
+df.prop.all <- do.call(cbind, pseudotime.proportions.all)
+
+tsne.all <- Rtsne(df.prop.all)$Y  %>% as.data.frame
+
+tsne.all <- cbind(cyto.annotations,tsne.all, meta.all) %>% as.data.frame
+
+
+plots.genetic.all <- lapply(colnames(cyto.annotations), function(x){
+    ggplot(tsne.all, aes(V1, V2, color = as.factor(tsne.all[,x]))) + geom_point() + theme.gg + labs(color = "Condition") + xlab("tSNE 1") + ylab("tSNE 2") + ggtitle(x)
+})
+
+
+pdf("output/TSNE-all-studies-cyto.pdf")
+print(plots.genetic.all)
+dev.off()
+
+tsne.all <- Rtsne(df.prop.all)$Y  %>% as.data.frame
+tsne.all <- cbind(tsne.all, meta.all) %>% as.data.frame
+ggplot(tsne.all, aes(V1, V2, color = blasts)) + geom_point() + theme.gg + labs(color = "Blast %") + xlab("tSNE 1") + ylab("tSNE 2")
+```
+```{r}
+sce <- readRDS("data/slingshot_vanGalen.RDS")
+
+pseudotime.proportions.TCGA <- readRDS("cache/Pseudotime_proportions_TCGA.RDS")
+pseudotime.proportions.TCGA <- lapply(pseudotime.proportions.TCGA, function(x){x[,1:100]})
+
+referenceMapping <- function(sce, patient.props){
+  
+  sce.umap <- reducedDim(sce, "UMAP")
+  
+  cellweights <- slingCurveWeights(as.SlingshotDataSet(sce))
+  cellweights <- t(apply(cellweights,1, function(x) x/sum(x)))
+  
+  pseudotimes <- slingPseudotime(as.SlingshotDataSet(sce))
+  
+  patient.names <- rownames(patient.props[[1]])
+  
+  # number of patients
+  np <- length(patient.names)
+  
+  # number of trajectories
+  nt <- length(patient.props)
+  
+  # ggplot theme
+  theme.gg <- ggplot2::theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  
+  patient.maps <- NULL
+  
+  # iterate over patients on different trajectories
+  for (i in seq_len(np)){
+    
+    plot.list <- NULL
+    pred.mat <- NULL
+    # trajectories
+    for (j in seq_len(nt)){
+      
+      # [trajectory, patient]
+      patient <- patient.props[[j]][i,]
+      
+      # drop CIBERSORT related names
+      patient <- patient[!names(patient) %in% c("Correlation", "RMSE")]
+      
+      # create a data frame per patient (pseudotime x 1)
+      df <- data.frame(time = as.numeric(names(patient)), logp = patient )
+      
+      # train your polynomial model
+      model <- loess (logp ~ time, data = df, span = 0.1)
+      
+      # get a trajectory
+      cells <- pseudotimes[,j]
+      
+      # predict your cell values per trajectory
+      pred <- predict(model, cells)
+      
+      # explicit zero
+      pred[pred < 0] <- 0
+      
+      # for ultimate trajectory
+      pred.mat <- cbind(pred.mat, pred) 
+      
+      plot.df <- as.data.frame(cbind(sce.umap, pred))
+      
+      plot.list[[j]] <- 
+        ggplot2::ggplot(plot.df, aes(UMAP_1, UMAP_2, color = pred)) + 
+          geom_point()  + labs(color = "Cell Proportions") +
+          scale_color_distiller(palette = "Blues",direction = 1, limits = c(0, max(0.1, max(plot.df$pred, na.rm = T)))) +
+          theme.gg + ggtitle(label = "", subtitle = paste0("Curve ", j))
+      
+      
+    }
+    
+    merged.trajectory <- rowSums(pred.mat * cellweights, na.rm = T)
+    
+    plot.list[["Merged"]] <- 
+      ggplot2::ggplot(as.data.frame(cbind(sce.umap, merged.trajectory)), aes(UMAP_1, UMAP_2, color = merged.trajectory)) + 
+          geom_point()  + labs(color = "Cell Proportions") +
+          scale_color_distiller(palette = "Blues",direction = 1, limits = c(0, max(0.1, max(plot.df$pred, na.rm = T)))) +
+          theme.gg + ggtitle(label = "", subtitle = "Merged trajectories")
+    
+    figure <- ggpubr::ggarrange(plotlist = plot.list, common.legend = T, legend = "right")
+    figure.merged <- ggpubr::annotate_figure(figure, fig.lab = patient.names[i])
+    
+    patient.maps[[patient.names[i]]] <- figure.merged
+  }
+  
+  return(patient.maps)
+}
+
+plot.TCGA.with.merged <- referenceMapping(sce, pseudotime.proportions.TCGA)
+
+
+for (i in names(plot.TCGA.with.merged)){
+  ggsave(filename = paste0("output/Patient_conditions/TCGA/CIBERSORT_Merged/", i, ".pdf"), 
+         plot = plot.TCGA.with.merged[[i]],
+         width = 10, height = 6)
+}
+```
+
+
+```{r lasso}
+library(glmnet)
+
+
+q
+y <- log1p(TCGA[intersected.genes,"TCGA.AB.2885"])
+X <- counts[intersected.genes,]
+X <- X[!is.na(y),]
+y <- y[!is.na(y)]
+
+
+pheatmap(counts)
+
+cvfit <- cv.glmnet(X, y, intercept = T)
+
+
+coefs <- as.matrix(coef(cvfit, s = "lambda.min"))[-1,]
+
+plot(coefs)
+df.plot <- as.data.frame(cbind(sce.umap, coef=coefs))
+
+df.plot <- df.plot[order(df.plot$coef, decreasing = F),]
+ggplot(df.plot, aes(UMAP_1, UMAP_2, color = coef)) + geom_point()+ theme.gg + scale_color_gradient(low = "#F0F0F0")
+```
+

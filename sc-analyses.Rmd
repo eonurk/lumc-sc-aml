@@ -1,0 +1,1138 @@
+---
+title: "sc-AML"
+author: "EO Karakaslar"
+date: "4/14/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LUMC/")
+```
+
+```{r libraries, warning=FALSE, message=FALSE}
+library(plyr)
+library(cinaR)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(glmnet)
+library(ggpubr)
+library(Seurat)
+library(readxl)
+library(ggplot2)
+library(viridis)
+library(pheatmap)
+library(jsonlite)
+library(tradeSeq)
+library(slingshot)
+library(paletteer)
+library(grDevices)
+library(data.table)
+library(RColorBrewer)
+library(SummarizedExperiment)
+library(SingleCellExperiment)
+
+
+cp.pastel <- paletteer_d("rcartocolor::Pastel")
+cp.polyco <- paletteer_d("Polychrome::light")
+
+theme.gg <- theme_bw(base_size = 10) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+
+
+
+Make whole vanGalen data a huge gene by cell matrix and merge their meta data.
+```{r load data}
+# vanGalen (BM)
+# Example file to see what it looks like
+count.matrix <- fread("data/vanGalen/GSM3587923_AML1012-D0.dem.txt.gz")
+
+gene.list <- count.matrix[,1]
+
+# list all gene x cell files
+cm.paths <- list.files(pattern = "dem", recursive = T)
+
+# list all meta files
+meta.paths <- list.files(pattern = "anno", recursive = T)
+
+big.cm <- data.frame(Gene = gene.list)
+for (file in cm.paths){
+    big.cm <- cbind(big.cm, fread(file, drop = "Gene"))
+}
+
+# transfer gene-names to rownames
+rownames(big.cm) <- big.cm$Gene
+big.cm <- big.cm[,-1]
+
+big.meta <- data.frame()
+for (file in meta.paths){
+    big.meta <- rbind.fill(big.meta, fread(file, fill = T))
+}
+
+rownames(big.meta) <- big.meta[,"Cell"]
+
+# check every cell-id matches the columns
+sum(colnames(big.cm) %in% rownames(big.meta)) == nrow(big.meta)
+
+big.meta$Sample <- strsplit(big.meta$Cell, "-", fixed = T) %>% 
+    map_chr(1) %>% strsplit("_", fixed = T) %>% 
+    map_chr(1)
+
+big.meta$Day <- sapply(big.meta$Cell, function(x){ifelse(grepl("-D",x), 
+                                         strsplit(x, "-", fixed = T) %>% 
+                                             map_chr(2) %>% 
+                                             strsplit("_", fixed = T) %>% 
+                                             map_chr(1), NA)})
+
+ 
+bm.loc <- grepl("BM",big.meta$Sample)
+aml.loc <- grepl("AML", big.meta$Sample)
+
+bm.data <- big.cm[,bm.loc] 
+bm.meta <- big.meta[bm.loc,]
+
+aml.data <- big.cm[,aml.loc] 
+aml.meta <- big.meta[aml.loc,]
+```
+
+Yeey, now fun starts! Let's create a Seurat object
+
+```{r move into seurat}
+bm <- CreateSeuratObject(counts = bm.data, project = "scAML",meta.data = bm.meta, min.cells = 3, min.features = 200)
+
+Idents(bm) <- "scAML"
+
+bm[["percent.mt"]] <- PercentageFeatureSet(bm, pattern = "^MT-")
+
+
+VlnPlot(bm, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# log-normalize
+bm <- NormalizeData(bm, normalization.method = "LogNormalize", scale.factor = 1e4)
+
+bm <- FindVariableFeatures(bm, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(bm), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(bm)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+
+plot2
+
+# scale
+all.genes <- rownames(bm)
+bm <- ScaleData(bm, features = all.genes)
+
+
+bm <- RunPCA(bm, features = VariableFeatures(object = bm))
+
+print(bm[["pca"]], dims = 1:5, nfeatures = 5)
+
+
+ElbowPlot(bm) # 10 PCs
+
+bm <- FindNeighbors(bm, dims = 1:10)
+bm <- FindClusters(bm, resolution = 0.5)
+
+bm <- RunUMAP(bm, dims = 1:10)
+
+# remove all except seurat object and colors
+rm(list=setdiff(ls(), c("bm", "cp.pastel", "cp.polyco")))
+# save some memory
+gc()
+```
+
+
+```{r}
+aml <- CreateSeuratObject(counts = aml.data, project = "scAML",meta.data = aml.meta, min.cells = 3, min.features = 200)
+
+aml <- NormalizeData(aml)
+aml <- FindVariableFeatures(object = aml)
+aml <- ScaleData(aml, verbose = FALSE)
+aml <- RunPCA(aml, features = VariableFeatures(aml),verbose = FALSE)
+aml <- RunUMAP(aml, dims = 1:50)
+
+
+
+# Select NPM1 mutated samples
+npm1.samples <- c("AML210A", "AML419A", "AML997", "AML329", "AML556")
+
+aml.npm1 <- subset(aml, subset = Sample == npm1.samples)
+aml.npm1 <- RunPCA(aml.npm1, features = VariableFeatures(aml),verbose = FALSE)
+aml.npm1 <- RunUMAP(aml.npm1, dims = 1:50)
+
+DimPlot(aml.npm1, split.by = "Sample")
+
+aml.npm1.d0 <- subset(aml.npm1, subset = Day == "D0")
+aml.npm1.d0 <- RunPCA(aml.npm1.d0, features = VariableFeatures(aml),verbose = FALSE)
+aml.npm1.d0 <- RunUMAP(aml.npm1.d0, dims = 1:50)
+
+
+features = c("CD34", "CD14", "CD8A", "CD4")
+
+
+
+pdf("output/VanGalen_AML_NPM1_D0_FeaturePlot.pdf", width = 8, height = 6)
+FeaturePlot(aml.npm1.d0, features = features, order = T) & NoLegend() + FontSize(x.text = 8, y.text = 8, x.title = 10, y.title = 10)
+dev.off()
+
+pdf("output/VanGalen_AML_NPM1_D0_Patients.pdf", width =  6, height = 4)
+DimPlot(aml.npm1.d0, group.by = "Sample", shuffle = T, label.size = 2) + 
+  FontSize(x.text = 8, y.text = 8, x.title = 10, y.title = 10)
+dev.off()
+
+FeaturePlot()
+```
+
+
+
+```{r Plot cell types}
+pdf("output/UMAP_by_cell_type_healthy_BM.pdf", width = 6, height = 5)
+DimPlot(bm, reduction = "umap", group.by = "CellType", cols = cp.polyco)
+dev.off()
+```
+
+
+```{r plot samples}
+pdf("output/UMAP_by_sample_healthy_BM.pdf", width = 6, height = 5)
+DimPlot(bm, reduction = "umap", group.by = "Sample", cols = cp.pastel)
+dev.off()
+```
+
+```{r cell numbers per sample}
+df.numbers <- bm@meta.data %>% group_by(Sample) %>% count_()
+
+pdf("output/number_of_cells_healhty_BM.pdf", width = 4, height = 4)
+ggplot(df.numbers, aes(Sample, n)) + geom_bar(stat = "identity") + ylab("Number of cells")
+dev.off()
+```
+
+```{r}
+pdf("output/UMAP_seurat_clusters_healthy_BM.pdf" ,width = 6, height = 5)
+DimPlot(bm, reduction = "umap", cols = cp.polyco)
+dev.off()
+```
+
+```{r}
+marker.genes <- c("CD34", "CD14","CD4", "CD8A","CCL5", "CD19","JUN")
+
+palette <- RColorBrewer::brewer.pal(10, "Reds")
+palette[1] <- "#adadad"
+
+pdf("output/UMAP_marker_genes_healthy_BM.pdf")
+FeaturePlot(bm, 
+            features = marker.genes,
+            order = T, cols = palette) & NoLegend() & FontSize(x.text =10, y.text =10, x.title = 10, y.title = 10)
+dev.off()
+```
+
+```{r}
+# Is this related to sorting?
+pdf("output/bm_healhty_JUN_by_sample.pdf", width = 14, height = 3)
+FeaturePlot(bm, 
+            features = c("JUN"), split.by = "Sample",
+            order = T, cols = palette) & FontSize(x.text =10, y.text =10, x.title = 10, y.title = 10)
+dev.off()
+```
+
+
+
+```{r slingshot analysis on healthy}
+# # may take a while
+# sce <- slingshot(as.SingleCellExperiment(bm), clusterLabels = 'seurat_clusters', 
+#                  start.clus = 0, stretch = 0, reducedDim = 'UMAP')
+
+sce <- readRDS("data/slingshot_vanGalen.RDS")
+
+# reduced dim
+sce.umap <- reducedDim(sce, type = "UMAP")
+```
+
+```{r}
+colors <- colorRampPalette(rev(brewer.pal(11,'Spectral')[-6]))(nrow(sce.umap))
+
+pdf("output/vangalen_healthy_bm_slingshot.pdf")
+plot(sce.umap, col = colors,  pch=16, asp = 1, cex = 0.5)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+dev.off()
+```
+
+```{r}
+nc <- 3
+pt <- slingPseudotime(sce)
+nms <- colnames(pt)
+nr <- ceiling(length(nms)/nc)
+pal <- viridis(100, end = 0.95)
+par(mfrow = c(nr, nc))
+breaklist <- seq(-3, 3, length.out = 100)
+pal <- colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(length(breaklist))
+
+pdf("output/vangalen_healthy_bm_slingshot_curves.pdf")
+for (i in nms) {
+  colors.temp <- pal[cut(pt[,i], breaks = 100)]
+  plot(sce.umap, col = colors.temp, pch = 16, cex = 0.5, main = i)
+  lines(SlingshotDataSet(sce)@curves[[i]], lwd=2, col='black')
+}
+dev.off()
+
+rm(nc, pt, nms, nr, pal, i, colors.temp)
+```
+
+```{r}
+plotGeneCount(curve = sce,  title = "log(expr)", gene = "CD14")
+```
+
+```{r}
+plotSmoothers(sce.gam, counts, "CD14")
+```
+
+
+
+```{r differential analyses for each cluster}
+# https://github.com/kstreet13/slingshot/issues/105#issuecomment-741246634
+# https://statomics.github.io/tradeSeq/articles/fitGAM.html
+
+sce <- readRDS("data/slingshot_vanGalen.RDS")
+
+abseq.genelist <- read_excel("data/abseq_462_gene_list.xlsx")
+
+counts <- as.matrix(sce@assays@data$counts)
+
+intersected.genes <- intersect(rownames(counts), abseq.genelist$Gene)
+
+# make results deterministic
+set.seed(6)
+
+# fitgam paralellization
+BPPARAM <- BiocParallel::bpparam()
+BPPARAM$workers <- 2 # use 2 cores
+
+# # NOTE: takes quite a while, best save.
+# sce.gam <- fitGAM(counts = counts, sds = SlingshotDataSet(sce), nknots = 5, verbose = T,
+#               parallel=TRUE, BPPARAM = BPPARAM, genes =intersected.genes)
+sce.gam <- readRDS("data/tradeseq_vangalen.RDS")
+
+# you should make it a slingshot object otherwise, it won't work. 
+pseudotimes <- slingPseudotime(SlingshotDataSet(sce), na = FALSE)[,c(3,4,6)]
+cellweights <- slingCurveWeights(sce)[,c(3,4,6)]
+
+zero.weights <- rowSums(cellweights == 0) == 3
+
+pseudotimes <- pseudotimes[!zero.weights,]
+cellweights <- cellweights[!zero.weights,]
+counts.filtered <- counts[,!zero.weights]
+
+# sce.gam2 <- fitGAM(counts = counts.filtered, pseudotime = pseudotimes, cellWeights = cellweights, 
+#                    nknots = 5, verbose = T, parallel=TRUE, BPPARAM = BPPARAM, genes =intersected.genes)
+
+sce.gam2 <-readRDS("data/tradeseq_vangalen_subset.RDS")
+```
+
+
+```{r cluster0 differential genes expressions with different fitgam}
+cluster0.genes <- c("H1F0", "NRIP1", "NPR3", "CD34", "CRHBP", "EGR1", "CDK6")
+
+theme.gg <- theme(legend.position = "none")  + theme_minimal()
+
+pdf("output/cluster0_genes_temporal_expression.pdf")
+lapply(cluster0.genes, function(x){
+  
+  predicted.lineages1 <- predictSmooth(sce.gam , gene = x) %>% filter(lineage %in% c(3,4,6))
+  predicted.lineages2 <- predictSmooth(sce.gam2, gene = x)
+  
+  
+  
+  p1 <- ggplot(predicted.lineages1, aes(time, log1p(yhat), color = lineage, group = lineage)) +geom_line() + theme.gg + ggtitle(x, subtitle = "trained on curve 3,4,6") & NoLegend()
+  p2 <- ggplot(predicted.lineages2, aes(time, log1p(yhat), color = lineage, group = lineage)) +geom_line() + theme.gg + ggtitle(x, subtitle = "subsetted curve 3,4,6 from all") & NoLegend()
+  
+  p2 | p1
+
+})
+dev.off()
+
+```
+
+
+
+
+```{r load TCGA data}
+TCGA <- read.csv("data/TCGA/laml.rnaseq.179_v1.0_gaf2.0_read_count_matrix.txt.tcgaID.txt", sep = "\t")
+
+# Just get the gene symbols
+TCGA$GeneID <- strsplit(TCGA$GeneID, "|", fixed = T) %>% map_chr(1)
+
+# Remove unknown 
+TCGA <- TCGA[TCGA$GeneID != "?", ]
+
+# Order genes according to their standard deviation in decreasing order
+TCGA <- TCGA [rev(order(apply(TCGA[,-1], 1, stats::sd))),]
+
+# Remove duplicated genes
+TCGA <- TCGA [!duplicated(TCGA[,1]),]
+
+# Make the gene names the row names
+rownames(TCGA) <- TCGA[,1]
+
+# Remove the genes
+TCGA <- TCGA[,-1]
+
+TCGA <- log1p(TCGA)
+```
+
+```{r TCGA meta data}
+TCGA.meta <- read.csv("data/TCGA/clinical_patient_laml.tsv", sep = "\t")
+
+TCGA.meta[,1]<- gsub("-", ".",TCGA.meta[,1])
+
+print(sum(TCGA.meta[,1] %in% colnames(TCGA)))
+
+# get only patients with RNA-seq
+TCGA.meta <- TCGA.meta[TCGA.meta[,1] %in% colnames(TCGA),]
+
+# sort to same order to data
+TCGA.meta <- TCGA.meta[match(colnames(TCGA),TCGA.meta[,1]),]
+
+rownames(TCGA.meta) <- TCGA.meta[,1]
+```
+
+
+
+
+```{r create gene expression matrix}
+
+predicted.vals <- tradeSeq::predictSmooth(sce.gam, gene = intersected.genes)
+
+pv.list <- split(predicted.vals, predicted.vals$lineage)
+eps <- 10e-5
+pv.df <- lapply(pv.list, function(x){
+  df <- reshape2::acast(data = x, gene ~ time, value.var = "yhat")
+  df <- df[complete.cases(df),]
+  df[df < eps] <- 0
+  df <- df[!(apply (df, 1, sd) < eps),]
+})
+```
+
+
+```{r}
+# Sets the minimum (0), the maximum (15), and the increasing steps (+1) for the color scale
+# Note: if some of your genes are outside of this range, they will appear white on the heatmap
+breaksList = seq(-3, 3, by = .001)
+
+pdf("output/heatmap_pseudotime_genes.pdf", width = 6, height = 5)
+lapply(pv.df, function(x){
+  pheatmap(x, cluster_cols = F, scale = "row", border_color = NA,show_colnames = F, show_rownames = F,
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(length(breaksList)),
+         breaks = breaksList)
+})
+dev.off()
+```
+
+
+```{r correlate TCGA samples with pseudotimes}
+# # find correlation between patients and pseudotime
+# pvals.patients <- lapply(pv.df, function(x){
+#     
+#   common.genes <- intersect(rownames(x), rownames(TCGA))
+#   
+#   p.vals <- matrix(0, nrow = ncol(TCGA), ncol = ncol(x))
+#   rownames(p.vals) <- colnames(TCGA)
+#   colnames(p.vals) <- colnames(x)
+#   
+#   for (i in seq_len(ncol(TCGA))){
+#     for(j in seq_len(ncol(x))){
+#       p.vals[i,j] <- cor.test(TCGA[common.genes,i], x[common.genes,j])$p.value
+#     }
+#   }
+#   
+#   return(p.vals)
+# })
+# 
+# saveRDS(pvals.patients, file = "data/TCGA_patient_pvals.RDS")
+
+pvals.patients <- readRDS("data/TCGA_patient_pvals.RDS")
+```
+
+
+```{r}
+TCGA.meta <- TCGA.meta %>% separate("cytogenetic_abnormality", c(paste0("cytogenetic_abnormality", c(1:4))), sep = "\\|")
+
+# cytogenetic changes
+cyto.loc <- paste0("cytogenetic_abnormality", c(1:4, "_other"))
+
+# remove weird stuff from cytogenetic list
+cyto.list <- unique(as.vector(t(TCGA.meta[,cyto.loc])))
+cyto.list <- setdiff(cyto.list, c("NA", "[Not Available]", "no", "No", "Yes", "Normal", "NO", NA))
+  
+TCGA.cyto <- TCGA.meta[,cyto.loc]
+
+cyto.annotations <- lapply(cyto.list, function(x){
+  ifelse(rowSums(TCGA.cyto == x, na.rm = T) > 0, 1, 0)
+}) %>% do.call(cbind, .) %>% as.data.frame
+
+colnames(cyto.annotations) <- cyto.list
+rownames(cyto.annotations) <- rownames(TCGA.meta)
+
+colnames(cyto.annotations)[8] <- "Complex"
+
+
+
+
+log.pvals.patients <- lapply(pvals.patients, function(p){
+  -log10(p)
+})
+
+log.pvals.patients.znorm<- lapply(log.pvals.patients, scale)
+
+
+# p values could be between 0-1, therefore -log10(p) will be (0, +Inf)
+breaksList = seq(0, 12, by = .001)
+pheatmap.colors <- colorRampPalette(rev(brewer.pal(n = 7, name = "PuOr")))(length(breaksList))
+
+pdf("output/TCGA_time_analyses_cytogenetic_meta_data.pdf", width =5, height = 5)
+lapply(log.pvals.patients, function(p){
+  pheatmap(p, cluster_cols = F, color = pheatmap.colors, annotation_row = cyto.annotations,
+           breaks = breaksList, show_rownames = F, show_colnames = F, legend = T, annotation_legend = F, fontsize = 6)
+})
+dev.off()
+
+
+# p values could be between 0-1, therefore -log10(p) will be (0, +Inf)
+breaksList = seq(-3, 3, by = .001)
+pheatmap.colors <- colorRampPalette(rev(brewer.pal(n = 7, name = "PuOr")))(length(breaksList))
+
+pdf("output/TCGA_time_analyses_cytogenetic_meta_data_znorm.pdf", width =5, height = 5)
+lapply(log.pvals.patients.znorm, function(p){
+  
+  pheatmap(p, cluster_cols = F, color = pheatmap.colors, annotation_row = cyto.annotations,
+           breaks = breaksList, show_rownames = F, show_colnames = F, legend = T, annotation_legend = F, fontsize = 6)
+})
+dev.off()
+
+```
+
+```{r mapping patients back to umap}
+patient.names <- rownames(log.pvals.patients[[1]])
+
+# number of patients
+np <- length(patient.names)
+
+# number of trajectories
+nt <- length(log.pvals.patients)
+
+# ggplot theme
+theme.gg <- theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+pt <- slingPseudotime(sce)
+
+# create cell type df for adjusting p-vals
+cell.types <- data.frame(cell.name = names(bm$CellType), cell.type = bm$CellType) %>% 
+  dplyr::count(cell.type)
+
+
+# iterate over patients on different trajectories
+for (i in seq_len(np)){
+  
+  plot.list <- NULL 
+  # trajectories
+  for (j in seq_len(nt)){
+    
+    # [trajectory, patient]
+    patient <- log.pvals.patients.znorm[[j]][i,]
+    
+    # create a data frame per patient (pseudotime x 1)
+    df <- data.frame(time = as.numeric(names(patient)), logp = patient )
+    
+    # train your polynomial model
+    model <- loess (logp ~ time, data = df, span = 0.1)
+    
+    cells <- pt[,j]
+    
+    # predict your cell values per trajectory
+    pred <- predict(model, cells)
+
+    # pred.corrected <- pred - log10(cell.types$n)
+    
+    plot.list[[j]] <- 
+      ggplot(as.data.frame(cbind(sce.umap, pred)), aes(UMAP_1, UMAP_2, color = pred)) + 
+        geom_point()  + labs(color = "z-scale(p)") +
+        scale_color_distiller(palette = "PuOr", limits = c(min(-4, min(pred, na.rm = T)), max(4, max(pred, na.rm = T)))) +
+        theme.gg + ggtitle(label = "", subtitle = paste0("Curve ", j))
+  }
+  
+  figure <- ggarrange(plotlist = plot.list, common.legend = T, legend = "right")
+  figure.merged <- annotate_figure(figure, fig.lab = patient.names[i])
+  
+  pdf(paste0("output/Patient_conditions/", patient.names[i], ".pdf"), width = 10, height = 6)
+  print(figure.merged)
+  dev.off()
+}
+```
+
+```{r example patient mapping on trajectory 3 for patient 1}
+
+pt <- slingPseudotime(sce)
+
+# [trajectory, patient]
+patient <- log.pvals.patients[[3]][1,]
+
+# create a data frame per patient (pseudotime x 1)
+df <- data.frame(time = as.numeric(names(patient)), logp = patient )
+
+# train your polynomial model
+model <- loess (logp ~ time, data = df, span = 0.1)
+
+# predict your cell association values for trajectory 3
+pred <- predict(model, pt[,3])
+
+pdf("output/example_back_mapping_patient.pdf", width = 8, height = 3)
+
+par(mfrow = c(1,3))
+# original patient profile
+plot(df$time, df$logp, xlab = "Pseudotime", ylab = "-log10(p)", ylim= c(0,15))
+legend(0, 2, legend=c("Patient pseudotime values"),
+       col=c("black"), pch=1, cex=0.8)
+
+
+plot(df$time, df$logp, xlab = "Pseudotime", ylab = "-log10(p)", ylim= c(0,15))
+lines(df$time, predict(model, df$time), col = "red")
+legend(0, 2, legend=c("Fitted polynomial model"),
+       col=c("red"), lty=1, cex=0.8)
+
+plot(pt[,3], pred, xlab = "Pseudotime", ylab = "-log10(p)" , cex = 0.8, col = "blue",ylim= c(0,15))
+legend(0, 2, legend=c("Cell prediction values"),
+       col=c("blue"), pch=1, cex=0.8)
+
+dev.off()
+```
+
+
+```{r LUMC patients data load}
+cm.LUMC <- read.csv("data/Other studies/LUMC/LUMC_counts_htseq.csv")
+
+wrangleMat <- function(matrix){
+  # Remove spike-ins for now (may not exists in your data)
+  matrix <- matrix [!grepl("^ERCC", matrix[,1]),]
+  
+  # Eliminate any homologs
+  # TODO could be dangerous to do it this way, find a better version...
+  matrix[,1] <- sapply(strsplit(matrix[,1], ".", fixed = TRUE), function(x){x[1]})
+  
+  # Order genes according to their standard deviation in decreasing order
+  matrix <- matrix [rev(order(apply(matrix[,-1], 1, stats::sd))),]
+  
+  # Remove duplicated genes
+  matrix <- matrix [!duplicated(matrix[,1]),]
+  
+  # Make the gene names the row names
+  rownames(matrix) <- matrix[,1]
+  
+  # Filter the genes
+  matrix <- matrix[,-1]
+  
+  # Enforce all counts to be integers
+  matrix <- round(matrix, 0)
+  
+}
+
+cm.LUMC <- wrangleMat(cm.LUMC)
+
+
+# ens to symbol map
+ens2gene <- cinaR::grch38
+m <- match(rownames(cm.LUMC), ens2gene$ensgene)
+mapped.genes <- ens2gene$symbol[m]
+
+# duplicated name/NA/mitochondrial genes
+removed.genes <- duplicated(mapped.genes) | is.na(mapped.genes) | grepl("^MT", mapped.genes)
+
+cm.LUMC <- cm.LUMC[!removed.genes,]
+rownames(cm.LUMC) <- mapped.genes[!removed.genes]
+
+
+cyto.LUMC <- read.csv("data/Other studies/LUMC/LUMC_mutations_oh_meta.csv", row.names = 1)
+rownames(cyto.LUMC) <- colnames(cm.LUMC)
+
+meta.LUMC <- read.csv("data/Other studies/LUMC/meta_AML_LUMC.csv")
+```
+
+
+```{r LUMC patients pvals}
+
+findAssociation <- function(references, bulksamples){
+  
+  # find correlation between patients and pseudotime
+  pvals.patients <- lapply(references, function(x){
+    
+    common.genes <- intersect(rownames(x), rownames(bulksamples))
+    
+    p.vals <- matrix(0, nrow = ncol(bulksamples), ncol = ncol(x))
+    rownames(p.vals) <- colnames(bulksamples)
+    colnames(p.vals) <- colnames(x)
+    
+    for (i in seq_len(ncol(bulksamples))){
+      for(j in seq_len(ncol(x))){
+        p.vals[i,j] <- cor.test(bulksamples[common.genes,i], x[common.genes,j])$p.value
+      }
+    }
+    return(p.vals)
+  })
+  
+  return(pvals.patients)
+}
+
+# normalize count matrix log(c+1)
+cm.LUMC.log <- log1p(cm.LUMC)
+
+# find associations with sc-reference
+mapped.LUMC <- findAssociation(pv.df, cm.LUMC.log)
+
+# Filter Bone marrow samples
+mapped.LUMC.BM <- lapply(mapped.LUMC, function(x){x[meta.LUMC$sample.type == "BM",]})
+
+cyto.annotations <- cyto.LUMC[meta.LUMC$sample.type == "BM",]
+cyto.annotations <- cyto.annotations[,apply(cyto.annotations,2,sd) > 0]
+
+log.mapped.LUMC.BM <- lapply(mapped.LUMC.BM, function(p){-log10(p)})
+
+# p values could be between 0-1, therefore -log10(p) will be (0, +Inf)
+
+
+df.anno.color <- data.frame(names = rep(colnames(cyto.annotations), each = 2), ops = rep(c(0,1), 38), 
+                            colors = as.vector(rbind("#FCFCFC", colorRampPalette(brewer.pal(8, "Set2"))(38))))
+
+mycolors <- split(df.anno.color$colors, df.anno.color$names)
+mycolors <- lapply(mycolors, function(x){names(x) <- as.factor(c("0", "1"));return(x)})
+
+breaksList = seq(0,12, by = .001)
+pheatmap.colors <- colorRampPalette(rev(brewer.pal(n = 7, name = "PuOr")))(length(breaksList))
+
+pdf("output/LUMC_time_analyses_cytogenetic_meta_data.pdf", width =10, height = 5)
+lapply(log.mapped.LUMC.BM, function(p){
+  pheatmap(p, cluster_cols = F, color = pheatmap.colors, annotation_row = cyto.annotations, 
+           breaks = breaksList, show_rownames = F, show_colnames = F, legend = T, annotation_legend = F, fontsize = 6, 
+           annotation_colors = mycolors)
+})
+dev.off()
+
+breaksList = seq(-3,3, by = .001)
+pheatmap.colors <- colorRampPalette(rev(brewer.pal(n = 7, name = "PuOr")))(length(breaksList))
+pdf("output/LUMC_time_analyses_cytogenetic_meta_data_znorm.pdf", width =10, height = 5)
+lapply(log.mapped.LUMC.BM, function(p){
+  pheatmap(p, cluster_cols = F, color = pheatmap.colors, annotation_row = cyto.annotations ,scale = "column",
+           breaks = breaksList, show_rownames = F, show_colnames = F, legend = T, annotation_legend = F, fontsize = 6, 
+           annotation_colors = mycolors)
+})
+dev.off()
+```
+
+
+```{r remapping to reference with correlation}
+# znorm
+log.mapped.LUMC.BM <- lapply(log.mapped.LUMC.BM, scale)
+
+patient.names <- rownames(log.mapped.LUMC.BM[[1]])
+
+# number of patients
+np <- length(patient.names)
+
+# number of trajectories
+nt <- length(log.mapped.LUMC.BM)
+
+# ggplot theme
+theme.gg <- theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+pt <- slingPseudotime(sce)
+
+# create cell type df for adjusting p-vals
+cell.types <- data.frame(cell.name = names(bm$CellType), cell.type = bm$CellType) %>% 
+  dplyr::count(cell.type)
+
+
+# iterate over patients on different trajectories
+for (i in seq_len(np)){
+  
+  plot.list <- NULL 
+  # trajectories
+  for (j in seq_len(nt)){
+    
+    # [trajectory, patient]
+    patient <- log.mapped.LUMC.BM[[j]][i,]
+    
+    # create a data frame per patient (pseudotime x 1)
+    df <- data.frame(time = as.numeric(names(patient)), logp = patient )
+    
+    # train your polynomial model
+    model <- loess (logp ~ time, data = df, span = 0.1)
+    
+    cells <- pt[,j]
+    
+    # predict your cell values per trajectory
+    pred <- predict(model, cells)
+
+    # pred.corrected <- pred - log10(cell.types$n)
+    
+    plot.list[[j]] <- 
+      ggplot(as.data.frame(cbind(sce.umap, pred)), aes(UMAP_1, UMAP_2, color = pred)) + 
+        geom_point()  + labs(color = "z-scale(p)") +
+        scale_color_distiller(palette = "PuOr", limits = c(min(-4, min(pred, na.rm = T)), max(4, max(pred, na.rm = T)))) +
+        theme.gg + ggtitle(label = "", subtitle = paste0("Curve ", j))
+  }
+  
+  figure <- ggarrange(plotlist = plot.list, common.legend = T, legend = "right")
+  figure.merged <- annotate_figure(figure, fig.lab = patient.names[i])
+  
+  pdf(paste0("output/Patient_conditions/LUMC/", patient.names[i], ".pdf"), width = 10, height = 6)
+  print(figure.merged)
+  dev.off()
+}
+
+```
+
+
+
+```{r pseudotime deconvolution with CIBERSORT}
+source("utils/CIBERSORT.R")
+
+# take the bulksamples (preferably non-normalized)
+bulksamples <- TCGA
+
+# run CIBERSORT per trajectory
+pseudotime.proportions.TCGA <- lapply(pv.df, function(x) CIBERSORT(sig_matrix = x, mixture_file = bulksamples, perm = 100, QN = F))
+
+
+cyto.annotations <- lapply(cyto.list, function(x){
+  ifelse(rowSums(TCGA.cyto == x, na.rm = T) > 0, 1, 0)
+}) %>% do.call(cbind, .) %>% as.data.frame
+
+colnames(cyto.annotations) <- cyto.list
+rownames(cyto.annotations) <- rownames(TCGA.meta)
+
+colnames(cyto.annotations)[8] <- "Complex"
+
+pdf("output/TCGA_CIBERSORT_time_analyses_cytogenetic_meta_data.pdf", width =10, height = 5)
+lapply(pseudotime.proportions.TCGA, function(p){
+  
+  breaksList = seq(0,0.1, by = .001)
+  pheatmap.colors <- colorRampPalette(rev(brewer.pal(n = 7, name = "PuOr")))(length(breaksList))
+  
+  pheatmap(p[,1:100], cluster_cols = F, color = pheatmap.colors, annotation_row = cyto.annotations,
+           breaks = breaksList, show_rownames = F, show_colnames = F, legend = T, annotation_legend = F, fontsize = 6)
+})
+dev.off()
+
+saveRDS(pseudotime.proportions.TCGA, file = "cache/Pseudotime_proportions_TCGA.RDS")
+```
+
+
+```{r Mapping back to reference}
+pseudotime.proportions.LUMC <- lapply(pv.df, function(x) CIBERSORT(sig_matrix = x, mixture_file = cm.LUMC, perm = 100, QN = F))
+
+pseudotime.proportions.LUMC.BM <- lapply(pseudotime.proportions.LUMC, function(x){x[meta.LUMC$sample.type == "BM",]})
+
+cyto.annotations <- cyto.LUMC[meta.LUMC$sample.type == "BM",]
+cyto.annotations <- cyto.annotations[,apply(cyto.annotations,2,sd) > 0]
+
+
+
+df.anno.color <- data.frame(names = rep(colnames(cyto.annotations), each = 2), ops = rep(c(0,1), 38), 
+                            colors = as.vector(rbind("#FCFCFC", colorRampPalette(brewer.pal(8, "Set2"))(38))))
+
+mycolors <- split(df.anno.color$colors, df.anno.color$names)
+mycolors <- lapply(mycolors, function(x){names(x) <- as.factor(c("0", "1"));return(x)})
+
+
+breaksList = seq(0,0.1, by = .001)
+pheatmap.colors <- colorRampPalette(rev(brewer.pal(n = 7, name = "PuOr")))(length(breaksList))
+
+pdf("output/LUMC_CIBERSORT_time_analyses_cytogenetic_meta_data.pdf", width =10, height = 5)
+lapply(pseudotime.proportions.LUMC.BM, function(p){
+  
+  
+  pheatmap(p[,1:100], cluster_cols = F, color = pheatmap.colors, annotation_row = cyto.annotations,
+           breaks = breaksList, show_rownames = F, show_colnames = F, legend = T, annotation_legend = F, fontsize = 6, 
+           annotation_colors = mycolors)
+})
+dev.off()
+
+saveRDS(pseudotime.proportions.LUMC, file = "cache/Pseudotime_proportions_LUMC.RDS")
+```
+
+
+
+```{r}
+referenceMapping <- function(sce, patient.props){
+  
+
+  sce.umap <- reducedDim(sce, "UMAP")
+  pseudotimes <- slingPseudotime(sce)
+  
+  patient.names <- rownames(patient.props[[1]])
+  
+  # number of patients
+  np <- length(patient.names)
+  
+  # number of trajectories
+  nt <- length(patient.props)
+  
+  # ggplot theme
+  theme.gg <- ggplot2::theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  
+  patient.maps <- NULL
+  
+  # iterate over patients on different trajectories
+  for (i in seq_len(np)){
+    
+    plot.list <- NULL 
+    # trajectories
+    for (j in seq_len(nt)){
+      
+      # [trajectory, patient]
+      patient <- patient.props[[j]][i,]
+      
+      # drop CIBERSORT related names
+      patient <- patient[!names(patient) %in% c("Correlation", "RMSE")]
+      
+      # create a data frame per patient (pseudotime x 1)
+      df <- data.frame(time = as.numeric(names(patient)), logp = patient )
+      
+      # train your polynomial model
+      model <- loess (logp ~ time, data = df, span = 0.1)
+      
+      # get a trajectory
+      cells <- pseudotimes[,j]
+      
+      # predict your cell values per trajectory
+      pred <- predict(model, cells)
+      
+      # explicit zero
+      pred[pred < 0] <- 0
+      
+      plot.df <- as.data.frame(cbind(sce.umap, pred))
+      
+      plot.list[[j]] <- 
+        ggplot2::ggplot(plot.df, aes(UMAP_1, UMAP_2, color = pred)) + 
+          geom_point()  + labs(color = "Cell Proportions") +
+          scale_color_distiller(palette = "Blues",direction = 1, limits = c(0, max(0.1, max(plot.df$pred, na.rm = T)))) +
+          theme.gg + ggtitle(label = "", subtitle = paste0("Curve ", j))
+    }
+    
+    figure <- ggpubr::ggarrange(plotlist = plot.list, common.legend = T, legend = "right")
+    figure.merged <- ggpubr::annotate_figure(figure, fig.lab = patient.names[i])
+    
+    patient.maps[[patient.names[i]]] <- figure.merged
+  }
+  
+  return(patient.maps)
+}
+
+
+patient.maps.LUMC <- referenceMapping(sce, pseudotime.proportions.LUMC)
+
+for (i in names(patient.maps.LUMC)){
+  ggsave(filename = paste0("output/Patient_conditions/LUMC/CIBERSORT/", i, ".pdf"), 
+         plot = patient.maps.LUMC[[i]],
+         width = 10, height = 6)
+}
+
+
+
+patient.maps.TCGA<- referenceMapping(sce, pseudotime.proportions.TCGA)
+
+for (i in names(patient.maps.TCGA)){
+  ggsave(filename = paste0("output/Patient_conditions/TCGA/CIBERSORT/", i, ".pdf"), 
+         plot = patient.maps.TCGA[[i]],
+         width = 10, height = 6)
+}
+```
+
+
+
+```{r}
+library(Rtsne)
+pseudotime.proportions.LUMC <- readRDS("cache/Pseudotime_proportions_LUMC.RDS")
+pseudotime.proportions.LUMC <- lapply(pseudotime.proportions.LUMC, function(x){x[,1:100]})
+
+
+df.prop.LUMC <- do.call(cbind, pseudotime.proportions.LUMC)
+
+
+tsne.LUMC <- Rtsne(df.prop.LUMC)$Y  %>% as.data.frame
+
+tsne.LUMC <- cbind(meta.LUMC,tsne.LUMC) %>% as.data.frame
+
+ggplot(tsne.LUMC, aes(V1, V2, color = blast_percentage)) + geom_point() + theme.gg
+```
+
+```{r All AML samples (four studies)}
+All.AML.count <- read.csv("data/Other studies/combat-seq_corrected_all/count_matrix_GDC_LUMC_AML_g.csv")
+All.AML.meta <- read.csv("data/Jeppe/meta_GDC_LUMC_AML.csv", row.names = 1)
+
+a <- colnames(All.AML.meta)
+
+# the order is the same
+colnames(All.AML.count) <- c("Genenames", All.AML.meta[,"ID"])
+
+All.AML.count <- wrangleMat(All.AML.count)
+
+
+# ens to symbol map
+ens2gene <- cinaR::grch38
+m <- match(rownames(All.AML.count), ens2gene$ensgene)
+mapped.genes <- ens2gene$symbol[m]
+
+# duplicated name/NA/mitochondrial genes
+removed.genes <- duplicated(mapped.genes) | is.na(mapped.genes) | grepl("^MT", mapped.genes)
+
+All.AML.count <- All.AML.count[!removed.genes,]
+rownames(All.AML.count) <- mapped.genes[!removed.genes]
+
+
+pseudotime.proportions.all <- lapply(pv.df, function(x) CIBERSORT(sig_matrix = x, mixture_file = All.AML.count, perm = 100, QN = F))
+
+saveRDS(pseudotime.proportions.all, "cache/pseudotime_proportions_all.RDS")
+# patient.maps.all <- referenceMapping(sce, pseudotime.proportions.all)
+```
+
+```{r patient heatmaps (4 studies combined)}
+pd <- All.AML.meta$primary_diagnosis
+
+pd[is.na(pd)] <- "Unknown"
+
+cyto.annotations <- model.matrix(~ 0 + pd) %>% as.data.frame
+
+
+rownames(cyto.annotations) <- All.AML.meta[,"ID"]
+colnames(cyto.annotations) <- gsub("pd", "", colnames(cyto.annotations))
+
+
+df.anno.color <- data.frame(names = rep(colnames(cyto.annotations), each = 2), ops = rep(c(0,1), ncol(cyto.annotations)), 
+                            colors = as.vector(rbind("#FCFCFC", "#FF0000")))
+
+
+
+mycolors <- split(df.anno.color$colors, df.anno.color$names)
+mycolors <- lapply(mycolors, function(x){names(x) <- as.factor(c("0", "1"));return(x)})
+
+
+cyto.annotations <- cbind(cyto.annotations, All.AML.meta[, c("sample_type","gender", "blasts", "study")])
+
+# p values could be between 0-1, therefore -log10(p) will be (0, +Inf)
+breaksList = seq(0, 0.1, by = .001)
+pheatmap.colors <- colorRampPalette(rev(brewer.pal(n = 7, name = "PuOr")))(length(breaksList))
+
+pdf("output/All_studies_CIBERSORT_time_analyses_with_primary_diagnosis.pdf", width =10, height = 5)
+lapply(pseudotime.proportions.all, function(p){
+  
+  pheatmap(p[,1:100], cluster_cols = F, color = pheatmap.colors, annotation_row = cyto.annotations,
+           breaks = breaksList, show_rownames = F, show_colnames = F, legend = T, annotation_legend = T, fontsize = 6, 
+           annotation_colors = mycolors)
+})
+dev.off()
+```
+
+
+
+```{r seperate myeloid lineage}
+# all.celltypes <- unique(bm$CellType)
+# 
+# myleoid <- c("earlyEry", "GMP", "HSC", "lateEry", "Mono", "ProB", "ProMono", "cDC","pDC", "Prog")
+# 
+# lymphoid <- setdiff(all.celltypes, myleoid)
+# 
+# 
+# bm.myeloid <- bm[,bm$CellType %in% myleoid]
+# 
+# bm.myeloid <- RunUMAP(bm.myeloid, dims = 1:10)
+# 
+# # New UMAP for myleoid
+# DimPlot(bm.myeloid, reduction = "umap", group.by = "CellType", cols = cp.polyco)
+```
+
+```{r seperate myeloid lineage}
+# # may take a while
+# sce <- slingshot(as.SingleCellExperiment(bm.myeloid), clusterLabels = 'seurat_clusters', 
+#                  start.clus = 0, stretch = 0, reducedDim = 'UMAP')
+# 
+# colors <- colorRampPalette(rev(brewer.pal(11,'Spectral')[-6]))(nrow(sce.umap))
+# 
+# pdf("output/vangalen_healthy_bm_slingshot_myeloid.pdf")
+# plot(sce.umap, col = colors,  pch=16, asp = 1, cex = 0.5)
+# lines(SlingshotDataSet(sce), lwd=2, col='black')
+# dev.off()
+# 
+# 
+# counts <- as.matrix(sce@assays@data$counts)
+# 
+# intersected.genes <- intersect(rownames(counts), abseq.genelist$Gene)
+# 
+# # reduced dim
+# sce.umap <- reducedDim(sce, type = "UMAP")
+# 
+# # # NOTE: takes quite a while, best save.
+# sce.gam <- fitGAM(counts = counts, sds = SlingshotDataSet(sce), nknots = 5, verbose = T,
+#               parallel=TRUE, BPPARAM = BPPARAM, genes = intersected.genes)
+```
+
+```{r}
+# load("data/Abseq/WTA.rda")
+# 
+# WTA <- Seurat::UpdateSeuratObject(WTA)
+# 
+# DefaultAssay(WTA) <- "RNA"
+# 
+# WTA <- RunUMAP(WTA, dims = 1:10)
+# 
+# DimPlot(WTA, reduction = "umap")
+# 
+# 
+# integration.list <- list(vanGalen = bm, abSeq = WTA)
+# 
+# # normalize and identify variable features for each dataset independently
+# ifnb.list <- lapply(X = integration.list, FUN = function(x) {
+#     x <- NormalizeData(x)
+#     x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+# })
+# 
+# # select features that are repeatedly variable across datasets for integration
+# features <- SelectIntegrationFeatures(object.list = ifnb.list)
+# 
+# anchors <- FindIntegrationAnchors(object.list = ifnb.list, anchor.features = features)
+# 
+# # this command creates an 'integrated' data assay
+# integrated.suerat <- IntegrateData(anchorset = anchors)
+# 
+# DefaultAssay(integrated.suerat) <- "integrated"
+# 
+# integrated.suerat <- ScaleData(integrated.suerat, verbose = FALSE)
+# integrated.suerat <- RunPCA(integrated.suerat, npcs = 30, verbose = FALSE)
+# integrated.suerat <- RunUMAP(integrated.suerat, reduction = "pca", dims = 1:30)
+# integrated.suerat <- FindNeighbors(integrated.suerat, reduction = "pca", dims = 1:30)
+# integrated.suerat <- FindClusters(integrated.suerat, resolution = 0.5)
+# 
+# 
+# DimPlot(integrated.suerat, reduction = "umap", label = TRUE, repel = TRUE)
+# 
+# DefaultAssay(integrated.suerat) <- "integrated"
+# 
+# integrated.markers <- FindAllMarkers(integrated.suerat, min.pct = 0.25, logfc.threshold = 0.25)
+# 
+# top10 <- integrated.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+# 
+# pdf("output/Integrated_data_cluster_diff_analyses.pdf", width = 14, height = 18)
+# DoHeatmap(integrated.suerat, features = top10$gene) + NoLegend()
+# dev.off()
+# 
+# FeaturePlot(integrated.suerat, features =marker.genes <- c("CD34", "CD14","CD4", "CD8A","CCL5", "CD19"))
+# 
+# markers.to.plot <- c("CD3D", "CREM", "HSPH1", "SELL", "GIMAP5", "CACYBP", "GNLY", "NKG7", "CCL5", 
+#     "CD8A", "MS4A1", "CD79A", "MIR155HG", "NME1", "FCGR3A", "VMO1", "CCL2", "S100A9", "HLA-DQA1", 
+#     "GPR183", "PPBP", "GNG11", "HBA2", "HBB", "TSPAN13", "IL3RA", "IGJ", "PRSS57")
+
+```
+
+

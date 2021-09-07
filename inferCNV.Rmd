@@ -1,0 +1,109 @@
+---
+title: "InferCNV"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LUMC/")
+```
+
+```{r libraries}
+library(data.table)
+library(plyr)
+library(dplyr)
+library(reshape2)
+library(purrr)
+
+```
+
+
+Make whole vanGalen data a huge gene by cell matrix and merge their meta data.
+```{r load data}
+# vanGalen (BM)
+# Example file to see what it looks like
+count.matrix <- fread("data/vanGalen/GSM3587923_AML1012-D0.dem.txt.gz")
+
+gene.list <- count.matrix[,1]
+
+# list all gene x cell files
+cm.paths <- list.files(pattern = "dem", recursive = T)
+
+# list all meta files
+meta.paths <- list.files(pattern = "anno", recursive = T)
+
+big.cm <- data.frame(Gene = gene.list)
+for (file in cm.paths){
+    big.cm <- cbind(big.cm, fread(file, drop = "Gene"))
+}
+
+# transfer gene-names to rownames
+rownames(big.cm) <- big.cm$Gene
+big.cm <- big.cm[,-1]
+
+big.meta <- data.frame()
+for (file in meta.paths){
+    big.meta <- rbind.fill(big.meta, fread(file, fill = T))
+}
+
+rownames(big.meta) <- big.meta[,"Cell"]
+
+# check every cell-id matches the columns
+sum(colnames(big.cm) %in% rownames(big.meta)) == nrow(big.meta)
+
+big.meta$Sample <- strsplit(big.meta$Cell, "-", fixed = T) %>% 
+    map_chr(1) %>% strsplit("_", fixed = T) %>% 
+    map_chr(1)
+
+big.meta$Day <- sapply(big.meta$Cell, function(x){ifelse(grepl("-D",x), 
+                                         strsplit(x, "-", fixed = T) %>% 
+                                             map_chr(2) %>% 
+                                             strsplit("_", fixed = T) %>% 
+                                             map_chr(1), NA)})
+
+ 
+bm.loc <- grepl("BM",big.meta$Sample)
+aml.loc <- grepl("AML", big.meta$Sample)
+
+bm.data <- big.cm[,bm.loc] 
+bm.meta <- big.meta[bm.loc,]
+
+aml.data <- big.cm[,aml.loc] 
+aml.meta <- big.meta[aml.loc,]
+
+# remove all except seurat object and colors
+# rm(list=setdiff(ls(), c("aml.data", "aml.meta")))
+
+patients <- unique(aml.meta$Sample)
+
+lapply(patients, function(pt){
+    
+    aml.meta.pt <- aml.meta %>% dplyr::filter(Sample == pt) 
+    if(nrow(aml.meta.pt) > 2e3){
+        aml.meta.pt <- aml.meta.pt[sample(nrow(aml.meta.pt), size = 2e3),]
+    }
+    aml.meta.pt <- aml.meta.pt %>% group_by(CellType) %>% filter(n() > 1)
+    
+    cells <- aml.meta.pt %>% pull(Cell)
+    
+    aml.data.pt <- aml.data[,cells]
+    
+    
+    
+    # aml.data.pt <- as.matrix(aml.data.pt)
+    # aml.data.pt <- Matrix::Matrix(aml.data.pt, sparse = T)
+    
+    data.path <- paste0("data/InferCNV/", pt)
+    dir.create(data.path)
+    write.table(aml.data.pt, file = paste0(data.path, "/VanGalen_AML_expr.txt"), quote = F, sep = '\t')
+    
+    meta.file <- paste0("data/InferCNV/", pt, "/VanGalen_AML_meta.txt")
+    write.table(aml.meta.pt[,c("Cell", "CellType")], 
+                file = meta.file, quote = F, sep = '\t', row.names = F, col.names = F)
+    
+    gc()
+})
+
+
+```
+
