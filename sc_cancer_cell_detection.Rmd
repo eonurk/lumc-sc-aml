@@ -1,0 +1,205 @@
+---
+title: "sc_cancer_cell_detection"
+author: "E Onur Karakaslar"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LUMC/")
+```
+
+```{r import libraries and utils, include=TRUE, message=FALSE, warning=FALSE}
+library(MuSiC) # deconvolution methodq
+library(xbioc) # required for MusiC to run
+library(dplyr) # %>%
+library(ggplot2) # nice plots
+library(pheatmap) # pheatmaps
+library(paletteer) # nice colors
+library(RColorBrewer) # beatiful colors
+library(survminer) # survival analyses (KM-plots)
+library(survival) # survival analyses (surv function)
+
+# save figs 
+saveFigs = FALSE
+
+# load some utility functions
+source("utils/wrangleMat.R") 
+load("cache/cell_type_colors.RDS")
+# ggplot theme
+theme.gg <- theme_bw(base_size = 10) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+```
+
+
+```{r}
+# deconvoluted 20 cell types
+selected.ct <- 
+c("Conventional dendritic cells (cDCs)", 
+  "Promyelocytes / GMPs", "Naive CD8 T cells", "Mature naive B cells", 
+  "Myelocyte", "Plasma cells", "Class-switched memory B cells", "Effector / memory CD4 T cells", 
+  "Multipotent progenitors (MPPs)", "pro-B cells", "Effector / memory CD8 T cells", 
+  "Plasmacytoid dendritic cells (pDCs)", "NK cells", "Megakaryocyte progenitors", 
+  "Early MPPs", "pDC progenitors", "Naive CD4 T cells", "Monocytes", 
+  "Eosinophil / Basophil progenitors", "Early EMP")
+```
+
+```{r}
+# Healthy map
+immune.combined <- readRDS("data/Integrated_TRI_VG_Seurat.RDS")
+
+cell.type.order <- 
+  immune.combined@meta.data%>% dplyr::count_("label") %>% arrange(-n) %>% pull(label) 
+
+## Seurat Integration with Van Galen AML samples
+# featureList <- rownames(immune.combined@assays$integrated@data)
+# 
+# DefaultAssay(immune.combined) <- "RNA"
+# Idents(immune.combined) <- "label"
+# 
+# immune.combined <- subset(immune.combined, 
+#                           idents = selected.ct, 
+#                           invert = F)
+# 
+# ifnb.list <- SplitObject(immune.combined, split.by = "study")
+# 
+# ifnb.list$AML_VanGalen <- readRDS("data/VanGalen_AML_SeuratObject.RDS")
+# 
+# 
+# # normalize and identify variable features for each dataset independently
+# ifnb.list <- lapply(X = ifnb.list, FUN = function(x) {
+#     x <- NormalizeData(x[featureList,])
+#     x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+# })
+# 
+# # select features that are repeatedly variable across datasets for integration
+# features <- SelectIntegrationFeatures(object.list = ifnb.list)
+# 
+# anchors <- FindIntegrationAnchors(object.list = ifnb.list, anchor.features = features)
+# 
+# integrated <- IntegrateData(anchorset = anchors)
+# 
+# saveRDS(object = integrated, file = "data/Healthy_and_VG-AML_SeuratObject.RDS")
+```
+
+
+```{r}
+library(randomForest)
+library(Seurat)
+integrated <- readRDS("data/Healthy_and_VG-AML_SeuratObject.RDS")
+DefaultAssay(integrated)   <- "integrated"
+
+
+all.data <- t(as.matrix(integrated@assays$integrated@data))
+all.meta <- integrated@meta.data
+
+aml.samples <- grepl("AML",all.meta$Sample)
+
+X.train <- all.data[!aml.samples,]
+
+
+y.train <- all.meta[!aml.samples,"label"]
+
+
+model1 <- randomForest(x = X.train, y = as.factor(y.train), 
+                      ntree = 100, 
+                      do.trace = F,
+                      sampsize = rep(20, length(unique(y.train))),
+                      replace = T)
+
+library(caret)
+
+cm.train <- confusionMatrix(predict(model), as.factor(y.train))
+cm.train.table <- as.data.frame(cm.train$table)
+
+
+cm.train.table$Prediction <- factor(cm.train.table$Prediction, levels=rev(cell.type.order))
+cm.train.table$Reference <- factor(cm.train.table$Reference, levels=(cell.type.order))
+cm.train.table <- cm.train.table %>% group_by(Reference) %>% mutate(Perc = Freq/sum(Freq))
+
+gg.train <- 
+ggplot(cm.train.table, aes(Reference,Prediction, fill= Perc)) +
+    geom_tile() +
+    scale_fill_gradient(low="white", high="#d60000") +
+    labs(x = "Reference",y = "Prediction") + theme.gg + ggtitle("Train") + 
+  # theme(legend.position = "none") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) + 
+guides(fill = guide_colourbar(barwidth = 0.5, barheight = 5, title = "Fraction", frame.colour = "black", frame.linewidth = 0.4))
+
+
+pdf("output/Cell_Type_Pred_ConfusionMat_Healthy_BM_Training.pdf", width = 6, height = 5)
+print(gg.train)
+dev.off()
+```
+
+```{r test Van Galen AML cell}
+# Select the AML patient cells and meta
+aml.data <- all.data[aml.samples, ]
+aml.meta <- all.meta[aml.samples, ]
+
+# Select the cells with known mutations (AML cells)
+aml.cells <- aml.data[aml.meta$MutTranscripts != "" & !is.na(aml.meta$MutTranscripts),]
+
+aml.cell.classes <- paste0(predict(model1, as.matrix(aml.cells)), "-like")
+
+aml.cell.classes[aml.cell.classes %in% names(table(aml.cell.classes)[table(aml.cell.classes) < 20])] <- "Other-like"
+
+# Model2 with aml cells
+newX <- rbind(X.train, aml.cells)
+newY <- c(y.train, aml.cell.classes)
+
+model2 <- randomForest(x = newX, y = as.factor(newY), 
+                      ntree = 100, 
+                      do.trace = F,
+                      sampsize = rep(20, length(unique(newY))),
+                      replace = T)
+
+
+cm.train <- confusionMatrix(predict(model2), as.factor(newY))
+cm.train.table <- as.data.frame(cm.train$table)
+
+cell.type.order.aml <- c(paste0(cell.type.order, "-like"), "Other-like")
+cell.type.order.aml <- cell.type.order.aml[cell.type.order.aml%in% aml.cell.classes]
+
+cm.train.table$Prediction <- factor(cm.train.table$Prediction, levels=rev(c(cell.type.order, cell.type.order.aml)))
+cm.train.table$Reference <- factor(cm.train.table$Reference, levels=(c(cell.type.order, cell.type.order.aml)))
+cm.train.table <- cm.train.table %>% group_by(Reference) %>% mutate(Perc = Freq/sum(Freq))
+
+gg.train <- 
+ggplot(cm.train.table, aes(Reference,Prediction, fill= Perc)) +
+    geom_tile() +
+    scale_fill_gradient(low="white", high="#d60000") +
+    labs(x = "Reference",y = "Prediction") + theme.gg + ggtitle("Train") + 
+  # theme(legend.position = "none") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) + 
+  guides(fill = guide_colourbar(barwidth = 0.5, barheight = 5, title = "Fraction", frame.colour = "black", frame.linewidth = 0.4))+
+  geom_hline(yintercept = 6.5, size = 0.2) + geom_vline(xintercept = 20.5, size = 0.2)
+
+pdf("output/Cell_Type_Pred_ConfusionMat_Healthy_and_AML_Training.pdf", width = 6, height = 5)
+print(gg.train)
+dev.off()
+```
+
+```{r}
+aml.meta$RF_EOK_Pred <- predict(model2, aml.data) 
+
+color.aml <- paletteer_d("awtools::a_palette")[1:6]
+names(color.aml) <- cell.type.order.aml
+
+
+predicted.proportions <- aml.meta %>% group_by(orig.ident) %>% 
+  add_count(name = "total.cell.per.sample") %>% 
+  group_by(orig.ident, RF_EOK_Pred, total.cell.per.sample, Sample) %>% 
+  summarise(total.cell.per.ct = n()) %>% 
+  mutate(Fraction = total.cell.per.ct/total.cell.per.sample)
+
+pdf("output/VanGalen_AML_samples_RF.pdf", width = 14, height = 6)
+ggplot(predicted.proportions, aes(orig.ident, Fraction, fill = RF_EOK_Pred)) + geom_bar(stat = "identity") + 
+    theme.gg + labs(fill = "Cell Types") + scale_fill_manual(values = c(cell.type.colors[1:20], color.aml)) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + xlab("Patients/Days") + ylab("Cell Type Fraction") + 
+    facet_grid(~ Sample, scales =  "free_x", space = "free_x") + 
+    theme(strip.background = element_blank(), strip.text = element_blank())
+dev.off()
+```
+

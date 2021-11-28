@@ -1,0 +1,513 @@
+---
+title: "Single-cell based deconvolutions of bulk AML transciptomic samples"
+author: "E Onur Karakaslar"
+date: "9/29/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LUMC/")
+```
+
+```{r import libraries and utils, include=TRUE, message=FALSE, warning=FALSE}
+library(MuSiC) # deconvolution method
+library(xbioc) # required for MusiC to run
+library(dplyr) # %>%
+library(ggplot2) # nice plots
+library(pheatmap) # pheatmaps
+library(RColorBrewer) # beatiful colors
+library(survminer) # survival analyses (KM-plots)
+library(survival) # survival analyses (surv function)
+
+
+
+# load some utility functions
+source("utils/wrangleMat.R") 
+
+# ggplot theme
+theme.gg <- theme_bw(base_size = 10) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+Having established the healthy bone marrow (BM) single-cell map, we can deconvolute
+bulk AML patients from different cohorts (TCGA-AML, TARGET, and BEAT-AML).
+
+
+Importing healthy BM map:
+```{r import BM}
+# loaded healthy BM map
+BM.azimuth<- readRDS("data/ref.Rds")
+
+xmat <- BM.azimuth@assays$refAssay
+
+xmeta <- BM.azimuth@meta.data
+xmeta$Cell <- rownames(xmeta)
+
+# exponentiate the data to non-log scale
+xmat@data <- expm1(xmat@data)
+
+
+C.eset <- Biobase::ExpressionSet(assayData = as.matrix(xmat@data), phenoData = Biobase::AnnotatedDataFrame(xmeta))
+
+
+# cell types ordered according to cell counts
+cell.count.df <- plyr::count(as.data.frame(C.eset$celltype.l2))
+
+cell.type.order <- cell.count.df[rev(order(cell.count.df[,2])), 1]
+cell.type.order
+```
+
+
+### TCGA
+Now we can start our analyses with TCGA-AML data, 
+```{r prepare TCGA data, cache=TRUE}
+# load count matrix 
+count.TCGA <- read.csv("data/Other studies/TCGA/TCGA_ht_seq.csv")
+
+count.TCGA <- wrangleMat(count.TCGA)
+
+
+# calculate 'stemness score'
+meta.TCGA <- read.csv("data/Other studies/TCGA/TCGA_ht_seq_meta.csv", row.names = 1)
+meta.TCGA$stemness <- calculateStemness(count.TCGA)
+
+mut.TCGA <- read.csv("data/Other studies/TCGA/TCGA_mutations_2_oh_meta.csv", row.names = 1)
+
+# primary diagnoses
+pdiagnoses.TCGA <- stats::model.matrix(~ 0 + meta.TCGA$primary_diagnosis)
+colnames(pdiagnoses.TCGA) <- sub(pattern = "meta.TCGA\\$primary_diagnosis", 
+                                 replacement = "", colnames(pdiagnoses.TCGA))
+
+
+# ens to symbol map
+ens2gene <- cinaR::grch38
+m <- match(rownames(count.TCGA), ens2gene$ensgene)
+mapped.genes <- ens2gene$symbol[m]
+
+# duplicated name/NA/mitochondrial genes
+removed.genes <- duplicated(mapped.genes) | is.na(mapped.genes) | grepl("^MT", mapped.genes)
+
+count.TCGA <- count.TCGA[!removed.genes,]
+rownames(count.TCGA) <- mapped.genes[!removed.genes]
+```
+
+We have prepared the meta / count matrix of TCGA cohort for down-stream analyses.
+
+```{r deconvolute TCGA, cache=TRUE, cache.vars='deconv.TCGA'}
+T.eset <- ExpressionSet(assayData = as.matrix(count.TCGA))
+
+# MusiC deconvolution
+deconv.TCGA <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'label',
+                                            markers = NULL, normalize = FALSE, samples = 'Sample', 
+                                            verbose = F)$Est.prop.weighted
+
+# deconvoluted fractions of TCGA samples (first 3 cell types)
+head(deconv.TCGA)[,1:3]
+```
+
+Now that we have the deconvoluted fractions, we can create a heatmap with patients 
+on the rows and cell types on the column, and have a look at it but first, 
+we'll assign colors to each deconvoluted cell type for results' reproducibility.
+```{r determine colors for each cell type}
+cell.type.colors <- c(as.vector(paletteer::paletteer_d("ggthemes::Tableau_20")), "#7d1a1a", "#595959")
+names(cell.type.colors) <- (c(colnames(deconv.TCGA), "Mixed Profiles", "Others"))
+```
+
+
+Now, we can have our heatmap:
+```{r creating the immune composition heatmap}
+# TCGA patient annotations 
+ann.row.TCGA <- as.data.frame(cbind(pdiagnoses.TCGA, 
+                                    Blast = meta.TCGA[,"BM_blasts"], 
+                                    Stemness = meta.TCGA[,"stemness"]))
+
+rownames(ann.row.TCGA) <- colnames(count.TCGA)
+
+
+# assignment threshold 0.5
+# assign each patient to a cluster if they are dominated by a cell type (more than 50%), 
+# otherwise they are mixed profiles
+clusters.TCGA <- apply(deconv.TCGA > 0.5, 1, function(x){
+  ifelse(length(x[x]) > 0, names(x[x]), "Mixed Profiles")
+}) 
+
+# assigning colors for reproducibility 
+ann.colors <- list(cluster = cell.type.colors[ unique(clusters.TCGA)])
+
+# order patients
+new.order.TCGA <- names(clusters.TCGA %>% sort)
+
+breaksList = seq(0,1, by = .001)
+pheatmap.colors <- colorRampPalette((brewer.pal(n = 7, name = "Blues")))(length(breaksList))
+
+
+pmap.TCGA <- pheatmap(deconv.TCGA [new.order.TCGA, intersect(cell.type.order, colnames(deconv.TCGA))], 
+         cluster_cols = F, cluster_rows = F, 
+         annotation_row = cbind(ann.row.TCGA[new.order.TCGA,], cluster = clusters.TCGA[new.order.TCGA]),
+         show_rownames = F,
+         color = pheatmap.colors, annotation_colors = ann.colors, 
+         breaks = breaksList, border_color = NA)
+
+pmap.TCGA
+```
+
+
+In this heatmap, each row adds up to 1, which composes a single patient. 
+Each column represents a different cell type. 9 out of 29 existing cell types were 
+removed by `MusiC` since those cell types do not exist in every sample in the BM map.
+Therefore, we are left with 20 cell types in total. 
+
+First thing we noticed was, for some patients a particular cell type is over-represented, 
+and for others (indicated with dark red, mixed profiles) combinations of few cell types composes the sample.
+Therefore, we assigned patients either to their over-represented cell types or to mixed profiles. 
+
+```{r save TCGA deconv hm, include=FALSE}
+pdf("output/Music_TCGA_deconvolution_via_integrated_pseudobulk_simple_clustering.pdf", width = 8, height = 5)
+print(pmap.TCGA)
+dev.off()
+```
+
+Having the cluster assignments, we can check the survival curves:
+```{r survival all clusters}
+temp.TCGA <- cbind(meta.TCGA, cluster = clusters.TCGA)
+temp.TCGA$status <- ifelse(temp.TCGA$event == "Alive", 0,1)
+
+
+
+
+# simple clustering
+km_trt_fit <- survfit(Surv(overal_survival, status) ~ cluster, data=temp.TCGA)
+
+
+plot.surv.all.TCGA <- 
+    ggsurvplot(km_trt_fit, 
+            pval = T,
+          
+           # Change legends: title & labels
+           legend.title = "Cluster",
+           legend.labs = gsub("cluster=", "", names(km_trt_fit$strata)), 
+          
+           palette = cell.type.colors[gsub("cluster=", "", names(km_trt_fit$strata))],
+           
+           # # Add risk table
+           risk.table = TRUE,
+           tables.height = 0.25, legend = "none",
+           tables.theme = theme_cleantable(),
+           
+           ggtheme = theme_bw(base_size = 12))
+
+plot.surv.all.TCGA
+```
+
+
+```{r include=FALSE}
+pdf("output/TCGA_Kaplan_Meier_simple_clustering_all.pdf")
+print(plot.surv.all.TCGA, newpage = F)
+dev.off()
+```
+
+Although there is a difference between cluster assignments, this survival plot looks really messy,
+and groups have few samples (e.g. Monocytes having only one patient). Therefore, we redefined the
+assignments, and assign the groups that has less than 10 patients to "Others" cluster. Then, replot 
+the KM plots once again.
+
+```{r survival redefined clusters}
+
+# redefine groups <15 patients as 'Others'
+temp.TCGA <- temp.TCGA %>%  dplyr::add_count(cluster)
+temp.TCGA$cluster.refined <- ifelse(temp.TCGA$n > 10, temp.TCGA$cluster, "Others")
+
+km_trt_fit <- survfit(Surv(overal_survival, status) ~ cluster.refined, data= temp.TCGA)
+
+
+plot.surv.redefined.TCGA <- 
+    ggsurvplot(km_trt_fit, 
+            pval = T,
+          
+           # Change legends: title & labels
+           legend.title = "Cluster",
+           legend.labs = gsub("cluster.refined=", "", names(km_trt_fit$strata)), 
+          
+           palette = cell.type.colors[gsub("cluster.refined=", "", names(km_trt_fit$strata))],
+           
+           # # Add risk table
+           risk.table = TRUE,
+           tables.height = 0.25, legend = "none",
+           tables.theme = theme_cleantable(),
+           
+           ggtheme = theme_bw(base_size = 12))
+
+plot.surv.redefined.TCGA
+```
+
+```{r include=FALSE}
+pdf("output/TCGA_Kaplan_Meier_simple_clustering.pdf")
+print(plot.surv.all.TCGA, newpage = F)
+dev.off()
+```
+
+
+We can compare primary diagnosis with our assingments as well:
+```{r}
+km_trt_fit <- survfit(Surv(overal_survival, status) ~ primary_diagnosis, data=temp.TCGA)
+
+plot.surv.pdiagnosis.TCGA <- 
+    ggsurvplot(km_trt_fit, 
+           pval = T,
+           # surv.median.line = "hv", # Add medians survival
+          
+           # Change legends: title & labels
+          legend.title = "Cluster",
+          legend.labs = gsub("primary_diagnosis=", "", names(km_trt_fit$strata)),
+           
+           palette = "lancet",  
+           
+           # # Add risk table
+           risk.table = TRUE,
+           tables.height = 0.25, legend = "none",
+           tables.theme = theme_cleantable(),
+           
+           ggtheme = theme_bw(base_size = 12))
+
+plot.surv.pdiagnosis.TCGA
+```
+
+```{r include=FALSE}
+pdf("output/TCGA_Kaplan_Meier_primary_diagnosis.pdf")
+print(plot.surv.pdiagnosis.TCGA, newpage = F)
+dev.off()
+```
+
+We can also project the [stemness score](https://www.nature.com/articles/nature20598) of the patients per cluster. 
+```{r}
+
+p1 <- ggplot(temp.TCGA, aes(cluster, stemness, fill = cluster)) + 
+    geom_boxplot() + geom_jitter(width = 0.1) + 
+  theme.gg + ylab("Stemness Score") + xlab("") + ggtitle("TCGA") + 
+  scale_fill_manual(values = cell.type.colors[unique(temp.TCGA$cluster)])+ 
+  labs(fill = "Clusters") + theme(axis.text.x=element_text(angle=45,hjust=1)) 
+  
+p2 <- ggplot(temp.TCGA, aes(cluster.refined, stemness, fill = cluster.refined)) + 
+    geom_boxplot() + geom_jitter(width = 0.1) + 
+  theme.gg + ylab("Stemness Score") + xlab("") + ggtitle("TCGA") + 
+  scale_fill_manual(values = cell.type.colors[unique(temp.TCGA$cluster.refined)])+ 
+  labs(fill = "Refined Clusters") + theme(axis.text.x=element_text(angle=45,hjust=1)) 
+
+
+print(p1)
+
+print(p2)
+```
+
+```{r include=FALSE}
+pdf("output/TCGA_Stemness_vs_Refined_Clusters.pdf", width = 5, height = 5)
+p1 
+p2
+dev.off()
+```
+
+
+### LUMC
+
+We have 100 bulk RNA-seq samples from LUMC (in house data). We can deconvolute them 
+using the same pipeline. 
+```{r deconvoluting LUMC, cache=TRUE}
+# count matrix
+count.LUMC <- read.csv("data/Other studies/LUMC/LUMC_counts_htseq.csv")
+
+count.LUMC <- wrangleMat(count.LUMC)
+
+meta.LUMC <- read.csv("data/Other studies/LUMC/meta_AML_LUMC.csv", row.names = 1)
+
+meta.LUMC$stemness <- calculateStemness(count.LUMC)
+# meta.LUMC.diagnosis <- read.csv("data/Other studies/LUMC/meta_2.csv", sep = ";", row.names = 1)
+# meta.LUMC <- cbind(meta.LUMC, meta.LUMC.diagnosis)
+
+
+
+mut.LUMC <- read.csv("data/Other studies/LUMC/LUMC_mutations_oh_meta.csv", row.names = 1)
+
+rownames(mut.LUMC) <- colnames(count.LUMC)
+
+# primary diagnoses
+pdiagnoses.LUMC <- stats::model.matrix(~ 0 + meta.LUMC$sample_description)
+colnames(pdiagnoses.LUMC) <- sub(pattern = "meta.LUMC\\$sample_description", 
+                                 replacement = "", colnames(pdiagnoses.LUMC))
+
+# Union FLT3 mutations to get a vector
+# mut.LUMC[,"FLT3"] <- ifelse(rowSums(mut.LUMC[,c("FLT3.ITD", "FLT3.TKD")] == 1) > 0, 1, 0)
+
+
+# ens to symbol map
+ens2gene <- cinaR::grch38
+m <- match(rownames(count.LUMC), ens2gene$ensgene)
+mapped.genes <- ens2gene$symbol[m]
+
+# duplicated name/NA/mitochondrial genes
+removed.genes <- duplicated(mapped.genes) | is.na(mapped.genes) | grepl("^MT", mapped.genes)
+
+count.LUMC <- count.LUMC[!removed.genes,]
+rownames(count.LUMC) <- mapped.genes[!removed.genes]
+
+
+T.eset <- ExpressionSet(assayData = as.matrix(count.LUMC))
+
+deconv.LUMC <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'label',
+                                            markers = NULL, normalize = FALSE, samples = 'Sample', 
+                                            verbose = F)$Est.prop.weighted
+```
+
+Now that, we have the deconvoluted fractions we can have the heatmap:
+```{r heatmap LUMC, fig.width=11, fig.height=5, cache=TRUE}
+
+ann.row.LUMC <- as.data.frame(cbind(pdiagnoses.LUMC, Blast = meta.LUMC[,"blast_percentage"], 
+                                    Stemness = meta.LUMC[,"stemness"] ))
+
+rownames(ann.row.LUMC) <- colnames(count.LUMC)
+
+# assignment threshold
+clusters.LUMC <- apply(deconv.LUMC > 0.5, 1, function(x){
+  ifelse(length(x[x]) > 0, names(x[x]), "Mixed Profiles")
+}) 
+
+new.order.LUMC <- names(clusters.LUMC %>% sort)
+
+# assigning colors for reproducibility 
+ann.colors <- list(cluster = cell.type.colors[ unique(clusters.LUMC)])
+
+pmap.LUMC <- pheatmap(deconv.LUMC [new.order.LUMC, intersect(cell.type.order, colnames(deconv.LUMC))], 
+         cluster_cols = F, cluster_rows = F, show_rownames = F,
+         annotation_row = cbind(ann.row.LUMC[new.order.LUMC,], cluster = clusters.LUMC[new.order.LUMC]),
+         color = pheatmap.colors, annotation_colors = ann.colors,
+         breaks = breaksList, border_color = NA, fontsize_row = 5)
+
+pmap.LUMC
+
+```
+
+```{r include=FALSE}
+pdf("output/Music_LUMC_deconvolution_via_integrated_pseudobulk_simple_clustering.pdf", width = 11, height = 5)
+pmap.LUMC
+dev.off()
+```
+
+```{r stemness vs refined clusters LUMC}
+
+# redefine groups <15 patients as 'Others'
+temp.LUMC <- temp.LUMC %>%  dplyr::add_count(cluster)
+temp.LUMC$cluster.refined <- ifelse(temp.LUMC$n > 10, temp.LUMC$cluster, "Others")
+
+p1 <- ggplot(temp.LUMC, aes(cluster, stemness, fill = cluster)) + 
+    geom_boxplot() + geom_jitter(width = 0.1) + 
+  theme.gg + ylab("Stemness Score") + xlab("") + ggtitle("TCGA") + 
+  scale_fill_manual(values = cell.type.colors[unique(temp.LUMC$cluster)])+ 
+  labs(fill = "Clusters") + theme(axis.text.x=element_text(angle=45,hjust=1)) 
+  
+p2 <- ggplot(temp.LUMC, aes(cluster.refined, stemness, fill = cluster.refined)) + 
+    geom_boxplot() + geom_jitter(width = 0.1) + 
+  theme.gg + ylab("Stemness Score") + xlab("") + ggtitle("TCGA") + 
+  scale_fill_manual(values = cell.type.colors[unique(temp.LUMC$cluster.refined)])+ 
+  labs(fill = "Refined Clusters") + theme(axis.text.x=element_text(angle=45,hjust=1)) 
+
+
+print(p1)
+print(p2)
+```
+```{r include=FALSE}
+pdf("output/LUMC_Stemness_vs_Refined_Clusters.pdf", width = 5, height = 5)
+p1 
+p2
+dev.off()
+```
+
+
+### BEAT-AML
+
+```{r cache=TRUE}
+count.BEAT <- read.csv("data/Other studies/BEAT/BEAT_AML_ht_seq.csv")
+
+count.BEAT <- wrangleMat(count.BEAT)
+
+
+meta.BEAT <- read.csv("data/Other studies/BEAT/BEAT_AML_ht_seq_meta.csv", row.names = 1)
+meta.BEAT$blasts <- ifelse(grepl("Bone Marrow",meta.BEAT$sample_type), meta.BEAT$BM_blasts, meta.BEAT$PB_blasts)
+meta.BEAT$stemness <- calculateStemness(count.BEAT)
+
+mut.BEAT <- read.csv("data/Other studies/BEAT/BEAT_AML_mutations.csv", row.names = 1)
+
+# BEAT has healthy samples, filtering those from the matrices
+patients.BEAT <- !is.na(meta.BEAT[,"primary_diagnosis", drop = F])
+
+count.BEAT <- count.BEAT[,patients.BEAT]
+meta.BEAT  <- meta.BEAT [patients.BEAT,]
+mut.BEAT   <- mut.BEAT  [patients.BEAT,]
+
+
+# primary diagnoses
+pdiagnoses.BEAT <- stats::model.matrix(~ 0 + meta.BEAT$primary_diagnosis)
+colnames(pdiagnoses.BEAT) <- sub(pattern = "meta.BEAT\\$primary_diagnosis", 
+                                 replacement = "", colnames(pdiagnoses.BEAT))
+
+
+# ens to symbol map
+ens2gene <- cinaR::grch38
+m <- match(rownames(count.BEAT), ens2gene$ensgene)
+mapped.genes <- ens2gene$symbol[m]
+
+# duplicated name/NA/mitochondrial genes
+removed.genes <- duplicated(mapped.genes) | is.na(mapped.genes) | grepl("^MT", mapped.genes)
+
+count.BEAT <- count.BEAT[!removed.genes,meta.BEAT$ID]
+rownames(count.BEAT) <- mapped.genes[!removed.genes]
+
+T.eset <- ExpressionSet(assayData = as.matrix(count.BEAT))
+
+deconv.BEAT <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'label',
+                                            markers = NULL, normalize = FALSE, samples = 'Sample', 
+                                            verbose = F)$Est.prop.weighted
+```
+
+
+```{r cache=TRUE}
+ann.row.BEAT <- as.data.frame(cbind(pdiagnoses.BEAT, Blast = meta.BEAT$blasts, Stemness = meta.BEAT$stemness))
+
+rownames(ann.row.BEAT) <- colnames(count.BEAT)
+
+
+# assignment threshold
+clusters.BEAT <- apply(deconv.BEAT > 0.5, 1, function(x){
+  ifelse(length(x[x]) > 0, names(x[x]), "Mixed Profiles")
+}) 
+
+
+# assigning colors for reproducibility 
+ann.colors <- list(cluster = cell.type.colors[ unique(clusters.BEAT)])
+
+new.order.BEAT <- names(clusters.BEAT %>% sort)
+
+# some of the Blast levels are NA, imputing those using the ones that exists
+df.blast <- as.data.frame(cbind(Blast = meta.BEAT$blasts, deconv.BEAT))
+
+fit <- glm(Blast ~ ., data = df.blast, na.action = na.omit )
+
+ann.row.BEAT$Blast.predicted <- predict(fit, newdata = df.blast[,-1])
+ann.row.BEAT$Blast.predicted [ann.row.BEAT$Blast.predicted < 0]  <- 0
+
+ann.row.BEAT$Blast.predicted <- ifelse(!is.na(ann.row.BEAT$Blast), ann.row.BEAT$Blast, ann.row.BEAT$Blast.predicted) 
+
+pmap.BEAT <- pheatmap(deconv.BEAT [new.order.BEAT, intersect(cell.type.order, colnames(deconv.BEAT))], 
+             cluster_cols = F, cluster_rows = F, show_rownames = F,
+             annotation_row = cbind(ann.row.BEAT[new.order.BEAT,], cluster = clusters.BEAT[new.order.BEAT]),
+             color = pheatmap.colors, annotation_colors = ann.colors, 
+             breaks = breaksList, border_color = NA)
+dev.off()
+```
+
+```{r include=FALSE}
+pdf("output/Music_BEAT_deconvolution_via_integrated_pseudobulk_simple_clustering.pdf", width = 12, height = 12)
+
+```
+
+
+

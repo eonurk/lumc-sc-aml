@@ -16,6 +16,7 @@ library(xbioc) # required for MusiC to run
 library(dplyr) # %>%
 library(ggplot2) # nice plots
 library(pheatmap) # pheatmaps
+library(paletteer) # nice colors
 library(RColorBrewer) # beatiful colors
 library(survminer) # survival analyses (KM-plots)
 library(survival) # survival analyses (surv function)
@@ -52,15 +53,16 @@ cell.type.order
 Now we can start our analyses with TCGA-AML data, 
 ```{r prepare TCGA data, cache=TRUE}
 # load count matrix 
-count.TCGA <- read.csv("data/Other studies/TCGA/TCGA_ht_seq.csv")
+count.TCGA <- read.csv("data/Studies_Latest/TCGA/TCGA_ht_seq.csv")
 
 count.TCGA <- wrangleMat(count.TCGA)
 
 
-# calculate 'stemness score'
-meta.TCGA <- read.csv("data/Other studies/TCGA/TCGA_ht_seq_meta.csv", row.names = 1)
-meta.TCGA$stemness <- calculateStemness(count.TCGA)
 
+meta.TCGA <- read.csv("data/Studies_Latest/TCGA/TCGA_ht_seq_meta.csv", row.names = 1)
+
+# calculate 'stemness score'
+meta.TCGA$stemness <- calculateStemness(count.TCGA)
 
 meta.TCGA[meta.TCGA$primary_diagnosis == "Mutated NPM1", "primary_diagnosis"] <- 
     "Acute myeloid leukemia with mutated NPM1"
@@ -74,11 +76,19 @@ meta.TCGA[meta.TCGA$primary_diagnosis == "t(9;11) MLLT3-MLL", "primary_diagnosis
     "Acute myeloid leukemia with t(9;11)(p22;q23); MLLT3-MLL"
 
 
+meta.TCGA.extra <- read.csv("data/Other studies/TCGA/data_clinical_patient.txt", skip = 4, sep = "\t")
+meta.TCGA.extra$RISK_MOLECULAR <- ifelse(meta.TCGA.extra$RISK_MOLECULAR == "N.D.", NA,  meta.TCGA.extra$RISK_MOLECULAR)
+
+meta.TCGA$order <- 1:nrow(meta.TCGA)
+meta.TCGA <- merge(meta.TCGA, meta.TCGA.extra[, c("PATIENT_ID","FAB", "RISK_MOLECULAR")], by.x = "patient_ID", by.y = "PATIENT_ID", )
+# re-order after merge
+meta.TCGA <- meta.TCGA[order(meta.TCGA$order),]
 
 
 
 
-mut.TCGA <- read.csv("data/Other studies/TCGA/TCGA_mutations_2_oh_meta.csv", row.names = 1)
+
+# mut.TCGA <- read.csv("data/Other studies/TCGA/TCGA_mutations_2_oh_meta.csv", row.names = 1)
 
 
 # primary diagnoses
@@ -124,11 +134,17 @@ names(cell.type.colors) <- (c(colnames(deconv.TCGA), "Mixed Profiles", "Others")
 
 Now, we can have our heatmap:
 ```{r creating the immune composition heatmap, fig.width=15, fig.height=5}
+
+meta.TCGA$FAB <- ifelse(meta.TCGA$FAB == "nc", NA, meta.TCGA$FAB)
+
 # TCGA patient annotations 
-ann.row.TCGA <- as.data.frame(cbind(pdiagnoses.TCGA, 
-                                    Blast.BM = meta.TCGA[,"BM_blasts"],
-                                    Blast.PB = meta.TCGA[,"PB_blasts"],
-                                    Stemness = meta.TCGA[,"stemness"]))
+ann.row.TCGA <- as.data.frame(cbind.data.frame(pdiagnoses.TCGA, 
+                                    #Blast.BM = meta.TCGA[,"BM_blasts"],
+                                    Blast = meta.TCGA[,"PB_blasts"], # All samples are from PB
+                                    FAB = meta.TCGA[,"FAB"],
+                                    ELN = meta.TCGA[,"RISK_MOLECULAR"],
+                                    Stemness = meta.TCGA[,"stemness"]), stringAsFactors = F)
+
 
 rownames(ann.row.TCGA) <- colnames(count.TCGA)
 
@@ -140,11 +156,35 @@ clusters.TCGA <- apply(deconv.TCGA > 0.5, 1, function(x){
   ifelse(length(x[x]) > 0, names(x[x]), "Mixed Profiles")
 }) 
 
+
 # assigning colors for reproducibility 
-ann.colors <- list(cluster = cell.type.colors[ unique(clusters.TCGA)])
+ELN.colors = c("Good" = "#00b533", "Intermediate"= "#d6d300", "Poor" = "#D5232F")
+FAB.colors = paletteer_d("awtools::a_palette")
+names(FAB.colors) <- paste0("M", 0:7)
+ann.colors <- list(Assignment = cell.type.colors[ unique(clusters.TCGA)], 
+                   ELN = ELN.colors, FAB = FAB.colors)
 
 # order patients
-new.order.TCGA <- names(clusters.TCGA %>% sort)
+patientOrder <- function(r, o, cell.type.order){
+  res <- 
+    lapply(intersect(c("Mixed Profiles", cell.type.order) , unique(o)), function(x){
+      r.new <- as.data.frame(r[o %in% x,,drop = F])
+      
+      if(x != "Mixed Profiles"){
+        
+        r.new <- r.new[(order(r.new[,x])),]
+      }
+      else {
+        r.new <- r.new[hclust(dist(r.new))$order,]
+      }
+      
+      return(r.new)
+    }) %>% do.call(rbind, .)
+  return(rownames(res))
+}
+
+# new.order.TCGA <- names(clusters.TCGA %>% sort)
+new.order.TCGA <- patientOrder(deconv.TCGA, clusters.TCGA, cell.type.order)
 
 breaksList = seq(0,1, by = .001)
 pheatmap.colors <- colorRampPalette((brewer.pal(n = 7, name = "Blues")))(length(breaksList))
@@ -152,12 +192,16 @@ pheatmap.colors <- colorRampPalette((brewer.pal(n = 7, name = "Blues")))(length(
 
 pmap.TCGA <- pheatmap(t(deconv.TCGA [new.order.TCGA, intersect(cell.type.order, colnames(deconv.TCGA))]), 
          cluster_cols = F, cluster_rows = F, 
-         annotation_col = cbind(ann.row.TCGA[new.order.TCGA,], cluster = clusters.TCGA[new.order.TCGA]),
+         annotation_col = cbind(ann.row.TCGA[new.order.TCGA,], Assignment = clusters.TCGA[new.order.TCGA]),
          show_rownames = T, show_colnames = F, 
          color = pheatmap.colors, annotation_colors = ann.colors, 
-         breaks = breaksList, border_color = NA)
+         breaks = breaksList, border_color = NA,
+         gaps_col = cumsum(table(clusters.TCGA[new.order.TCGA])[unique(clusters.TCGA[new.order.TCGA])]))
 
 pmap.TCGA
+
+
+
 ```
 
 
@@ -258,7 +302,7 @@ plot.surv.redefined.TCGA
 if(saveFigs)
 {    
     pdf("output/TCGA_Kaplan_Meier_simple_clustering.pdf")
-    print(plot.surv.all.TCGA, newpage = F)
+    print(plot.surv.redefined.TCGA, newpage = F)
     dev.off()
 }
 ```
@@ -297,30 +341,49 @@ if(saveFigs){
 }
 ```
 
-If we group PML-RARa, inv16, and RUNX1-RUNX1T1 
+Distribution of WHO classes in Promyelocytes
 ```{r}
-temp.TCGA$g1 <- ifelse(temp.TCGA$primary_diagnosis %in% c("Acute promyelocytic leukaemia, PML-RAR-alpha", 
-                                                          "Acute myeloid leukemia, CBF-beta/MYH11", 
-                                                          "Acute myeloid leukemia with t(8;21)(q22;q22); RUNX1-RUNX1T1"),
-                       "Promyelocytes/GMPs (3 groups)", NA)
+pdf("output/TCGA_Promyelocytes_WHO_classes.pdf", height = 2, width = 6)
+temp.TCGA %>% filter(cluster == "Promyelocytes / GMPs") %>% 
+  ggplot(aes(x = as.factor(primary_diagnosis))) + 
+  geom_bar(fill="steelblue")+ coord_flip() + xlab("") + 
+  theme.gg
+dev.off()
+```
 
-temp.TCGA[(!(temp.TCGA$g1 %in% "Promyelocytes/GMPs (3 groups)") & 
-               temp.TCGA$cluster.refined %in% c("Promyelocytes / GMPs")), "g1"] <-  "Promyelocytes/GMPs (Others)"
+```{r TCGA Promyelocytes - MPP survival}
+temp.TCGA$`MPP%` <- deconv.TCGA[,"Multipotent progenitors (MPPs)"]
+temp.TCGA$`Myelocyte%` <- deconv.TCGA[,"Myelocyte"]
+temp.TCGA$APL <- ifelse(temp.TCGA$primary_diagnosis == "Acute promyelocytic leukaemia, PML-RAR-alpha", 1, 0 )
+model <- coxph(Surv(overal_survival, status) ~ age_at_diagnosis + gender + APL +`MPP%`+`Myelocyte%` , 
+               data = temp.TCGA %>% filter(cluster == "Promyelocytes / GMPs"))
+
+pro.gmp.mpp.cox.plot <- ggforest(model, cpositions = c(0, 0.15, 0.35))
+
+if(saveFigs){
+  pdf("output/TCGA_Promyelocytes_MPP_percentage_forest.pdf")
+  pro.gmp.mpp.cox.plot
+  dev.off()
+}
+```
 
 
-km_trt_fit <- survfit(Surv(overal_survival, status) ~ g1, data=temp.TCGA[!is.na(temp.TCGA$g1), ])
 
 
-plot.promyelocytes.TCGA <- 
+```{r TCGA ELN CLASSES}
+km_trt_fit <- survfit(Surv(overal_survival, status) ~ RISK_MOLECULAR, data=temp.TCGA)
+
+
+plot.ELN.TCGA <- 
     ggsurvplot(km_trt_fit, 
            pval = T,
            # surv.median.line = "hv", # Add medians survival
           
            # Change legends: title & labels
           legend.title = "Cluster",
-          legend.labs = gsub("g1=", "", names(km_trt_fit$strata)),
+          legend.labs = gsub("RISK_MOLECULAR=", "", names(km_trt_fit$strata)),
            
-           palette = "lancet",  
+           palette = ELN.colors,  
            
            # # Add risk table
            risk.table = TRUE,
@@ -329,51 +392,15 @@ plot.promyelocytes.TCGA <-
            
            ggtheme = theme_bw(base_size = 12))
 
-plot.promyelocytes.TCGA
+plot.ELN.TCGA
 ```
-```{r TCGA good prognosis vs others in promyelocytes, fig.width=10}
-temp.TCGA$g2 <- ifelse(!is.na(temp.TCGA$g1), temp.TCGA$g1, temp.TCGA$primary_diagnosis)
-# covariates <- c("age_at_diagnosis",  "gender", "g1", "stemness", "primary_diagnosis")
-# univ_formulas <- sapply(covariates,
-#                         function(x) as.formula(paste('Surv(overal_survival, status)~', x)))
-#                         
-# univ_models <- lapply( univ_formulas, function(x){coxph(x, data = meta.promyelocytes)})
-# # Extract data 
-# univ_results <- lapply(univ_models,
-#                        function(x){ 
-#                           x <- summary(x)
-#                           p.value<-signif(x$wald["pvalue"], digits=2)
-#                           wald.test<-signif(x$wald["test"], digits=2)
-#                           beta<-signif(x$coef[1], digits=2);#coeficient beta
-#                           HR <-signif(x$coef[2], digits=2);#exp(beta)
-#                           HR.confint.lower <- signif(x$conf.int[,"lower .95"], 2)
-#                           HR.confint.upper <- signif(x$conf.int[,"upper .95"],2)
-#                           HR <- paste0(HR, " (", 
-#                                        HR.confint.lower, "-", HR.confint.upper, ")")
-#                           res<-c(beta, HR, wald.test, p.value)
-#                           names(res)<-c("beta", "HR (95% CI for HR)", "wald.test", 
-#                                         "p.value")
-#                           return(res)
-#                           
-#                          })
-# res <- t(as.data.frame(univ_results, check.names = FALSE))
-# as.data.frame(res)
-
-
-model <- coxph(Surv(overal_survival, status) ~ age_at_diagnosis + gender + g2 , 
-               data = temp.TCGA)
-
-
-pro.gmp.cox.plot <- ggforest(model, data = temp.TCGA, cpositions = c(0, 0.15, 0.35))
-pro.gmp.cox.plot
-```
-
 
 
 ```{r include=FALSE}
+
 if(saveFigs){
-    pdf("output/TCGA_Promyelocytes_GMPs_Cox_Regression_Forest.pdf", width = 10)
-    pro.gmp.cox.plot
+    pdf("output/TCGA_ELN_KM.pdf")
+    print(plot.ELN.TCGA, newpage = F)
     dev.off()
 }
 ```
@@ -407,6 +434,16 @@ plot.promyelocytes.NPM1.TCGA <-
 
 plot.promyelocytes.NPM1.TCGA
 ```
+
+```{r include=FALSE}
+
+if(saveFigs){
+    pdf("output/TCGA_Pro_vs_Others_KM_for_NPM1.pdf")
+    print(plot.promyelocytes.NPM1.TCGA, newpage = F)
+    dev.off()
+}
+```
+
 ```{r NOS comparison}
 temp.TCGA$NOS.cluster <- ifelse(temp.TCGA$primary_diagnosis == "Acute myeloid leukemia, NOS",
                                  ifelse(temp.TCGA$cluster == "Promyelocytes / GMPs", 
@@ -435,6 +472,67 @@ plot.promyelocytes.NOS.TCGA <-
            ggtheme = theme_bw(base_size = 12))
 
 plot.promyelocytes.NOS.TCGA
+```
+
+```{r}
+if(saveFigs){
+    pdf("output/TCGA_Pro_vs_Others_KM_for_NOS.pdf")
+    print(plot.promyelocytes.NOS.TCGA, newpage = F)
+    dev.off()
+}
+```
+
+
+```{r ELN poor comparison for pro vs others}
+temp.TCGA$ELN.cluster <- temp.TCGA$RISK_MOLECULAR
+
+temp.TCGA$ELN.cluster <- ifelse(temp.TCGA$RISK_MOLECULAR == "Poor",
+                                "All (ELN - Poor)",
+                                temp.TCGA$ELN.cluster)
+temp.TCGA$ELN.cluster <- ifelse(temp.TCGA$RISK_MOLECULAR == "Intermediate",
+                                ifelse(temp.TCGA$cluster == "Promyelocytes / GMPs", 
+                                        "Promyelocytes/GMPs (ELN - Intermediate)", "Others (ELN - Intermediate)"),
+                                temp.TCGA$ELN.cluster)
+temp.TCGA$ELN.cluster <- ifelse(temp.TCGA$RISK_MOLECULAR == "Good",
+                                "All (ELN - Good)",
+                                temp.TCGA$ELN.cluster)
+km_trt_fit <- survfit(Surv(overal_survival, status) ~ ELN.cluster, data=temp.TCGA[!is.na(temp.TCGA$ELN.cluster), ])
+
+
+ELN.IP.colors <- c("All (ELN - Good)" = "#00b533", "All (ELN - Poor)" = "#D5232F",
+                      "Promyelocytes/GMPs (ELN - Intermediate)" = "#8be800",
+                      "Others (ELN - Intermediate)" = "#e8b600")
+
+plot.promyelocytes.ELN.TCGA <- 
+    ggsurvplot(km_trt_fit, 
+           pval = T,
+           # surv.median.line = "hv", # Add medians survival
+          
+           # Change legends: title & labels
+          legend.title = "Cluster",
+          legend.labs = gsub("ELN.cluster=", "", names(km_trt_fit$strata)),
+           
+           palette = ELN.IP.colors,  
+           
+           # # Add risk table
+           risk.table = TRUE,
+           tables.height = 0.25, legend = "none",
+           tables.theme = theme_cleantable(),
+           
+           ggtheme = theme_bw(base_size = 12))
+
+plot.promyelocytes.ELN.TCGA$plot <- plot.promyelocytes.ELN.TCGA$plot + 
+  geom_step(data = plot.ELN.TCGA$data.survplot %>% filter(RISK_MOLECULAR == "Intermediate"), 
+            aes(time, surv), linetype = 2, color = ELN.colors["Intermediate"])
+
+plot.promyelocytes.ELN.TCGA
+```
+```{r include=FALSE}
+if(saveFigs){
+  pdf("output/TCGA_Pro_vs_Others_KM_for_ELN.pdf")
+  print(plot.promyelocytes.ELN.TCGA, newpage = F)
+  dev.off()
+}
 ```
 
 
@@ -572,8 +670,10 @@ deconv.LUMC <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'labe
 Now that, we have the deconvoluted fractions we can have the heatmap:
 ```{r heatmap LUMC, fig.width=15, fig.height=5, cache=TRUE}
 
-ann.row.LUMC <- as.data.frame(cbind(pdiagnoses.LUMC, Blast = meta.LUMC[,"blast_percentage"], 
-                                    Stemness = meta.LUMC[,"stemness"] ))
+ann.row.LUMC <- as.data.frame(cbind(pdiagnoses.LUMC, 
+                                    Stemness = meta.LUMC[,"stemness"] ,
+                                    Blast = meta.LUMC[,"blast_percentage"]
+                                    ))
 
 rownames(ann.row.LUMC) <- colnames(count.LUMC)
 
@@ -582,7 +682,9 @@ clusters.LUMC <- apply(deconv.LUMC > 0.5, 1, function(x){
   ifelse(length(x[x]) > 0, names(x[x]), "Mixed Profiles")
 }) 
 
-new.order.LUMC <- names(clusters.LUMC %>% sort)
+#new.order.LUMC <- names(clusters.LUMC %>% sort)
+new.order.LUMC <- patientOrder(deconv.LUMC, clusters.LUMC, cell.type.order)
+
 
 # assigning colors for reproducibility 
 ann.colors <- list(cluster = cell.type.colors[ unique(clusters.LUMC)])
@@ -591,7 +693,8 @@ pmap.LUMC <- pheatmap(t(deconv.LUMC [new.order.LUMC, intersect(cell.type.order, 
          cluster_cols = F, cluster_rows = F, show_rownames = T, show_colnames = F,
          annotation_col = cbind(ann.row.LUMC[new.order.LUMC,], cluster = clusters.LUMC[new.order.LUMC]),
          color = pheatmap.colors, annotation_colors = ann.colors,
-         breaks = breaksList, border_color = NA)
+         breaks = breaksList, border_color = NA,
+         gaps_col = cumsum(table(clusters.LUMC[new.order.LUMC])[unique(clusters.LUMC[new.order.LUMC])]))
 
 pmap.LUMC
 
@@ -628,6 +731,7 @@ p2 <- ggplot(temp.LUMC, aes(cluster.refined, stemness, fill = cluster.refined)) 
 print(p1)
 print(p2)
 ```
+
 ```{r include=FALSE}
 if(saveFigs){
     pdf("output/LUMC_Stemness_vs_Refined_Clusters.pdf", width = 5, height = 5)
@@ -641,18 +745,28 @@ if(saveFigs){
 ### BEAT-AML
 
 ```{r BEAT AML deconvolution, cache=TRUE}
-count.BEAT <- read.csv("data/Other studies/BEAT/BEAT_AML_ht_seq.csv")
+# count.BEAT <- read.csv("data/Other studies/BEAT/BEAT_AML_ht_seq.csv")
+count.BEAT <- read.csv("data/Studies_Latest/BEAT-AML/BEAT_AML_ht_seq.csv")
 
 count.BEAT <- wrangleMat(count.BEAT)
 
-
-meta.BEAT <- read.csv("data/Other studies/BEAT/BEAT_AML_ht_seq_meta.csv", row.names = 1)
-meta.BEAT$blasts <- ifelse(grepl("Bone Marrow",meta.BEAT$sample_type), meta.BEAT$BM_blasts, meta.BEAT$PB_blasts)
+# meta.BEAT <- read.csv("data/Other studies/BEAT/BEAT_AML_ht_seq_meta.csv", row.names = 1)
+meta.BEAT <- read.csv("data/Studies_Latest/BEAT-AML/BEAT_AML_ht_seq_meta_all.csv", row.names = 1)
+# meta.BEAT <- read.csv("data/Studies_Latest/BEAT-AML/BEAT_AML_ht_seq_meta.csv", row.names = 1)
+meta.BEAT$blasts <- ifelse(grepl("Bone Marrow",meta.BEAT$samples.sample_type), meta.BEAT$BM_blasts, meta.BEAT$PB_blasts)
 meta.BEAT$stemness <- calculateStemness(count.BEAT)
 
+#keep the order
+meta.BEAT$order <- 1:nrow(meta.BEAT)
+meta.BEAT$ID <- rownames(meta.BEAT)
+meta.BEAT.ELN <- read.csv("data/Studies_Latest/BEAT-AML/BEAT_META_ELN.tsv", sep = "\t")
 
 
-meta.BEAT$primary_diagnosis_refined <- ifelse(meta.BEAT$primary_diagnosis %in% c("Acute myeloid leukemia, NOS",
+meta.BEAT <- merge(meta.BEAT, meta.BEAT.ELN[,c("case_id", "eln_risk_classification")], by = "case_id")
+meta.BEAT <- meta.BEAT[order(meta.BEAT$order),]
+rownames(meta.BEAT) <- meta.BEAT$ID
+
+meta.BEAT$primary_diagnosis_refined <- ifelse(meta.BEAT$diagnoses.primary_diagnosis %in% c("Acute myeloid leukemia, NOS",
                                                                    "Acute myeloid leukemia with maturation",
                                                                    "Acute myeloid leukemia without maturation",
                                                                    "Acute myeloid leukemia, minimal differentiation",
@@ -662,7 +776,7 @@ meta.BEAT$primary_diagnosis_refined <- ifelse(meta.BEAT$primary_diagnosis %in% c
                                                                    "Acute megakaryoblastic leukaemia",
                                                                    "Acute basophilic leukemia",
                                                                    "Acute panmyelosis with myelofibrosis"), 
-                                              "Acute myeloid leukemia, NOS", meta.BEAT$primary_diagnosis)
+                                              "Acute myeloid leukemia, NOS", meta.BEAT$diagnoses.primary_diagnosis)
 
 meta.BEAT$primary_diagnosis_refined <- ifelse(meta.BEAT$primary_diagnosis_refined %in% 
                                                   c("Atypical chronic myeloid leukemia, BCR/ABL negative",
@@ -687,21 +801,21 @@ meta.BEAT$primary_diagnosis_refined <- ifelse(meta.BEAT$primary_diagnosis_refine
 
 
 # Select AML and related neoplasms (WHO 2016 classes)
-meta.BEAT[grepl("Acute myeloid leukemia", meta.BEAT$primary_diagnosis_refined) | 
+meta.BEAT<- meta.BEAT[grepl("Acute myeloid leukemia", meta.BEAT$primary_diagnosis_refined) | 
               meta.BEAT$primary_diagnosis_refined %in% c("Acute promyelocytic leukaemia, PML-RAR-alpha",
                                                          "Myeloid sarcoma",
-                                                         "Therapy related myeloid neoplasm"),] -> meta.BEAT
+                                                         "Therapy related myeloid neoplasm"),]
 
 
 
-mut.BEAT <- read.csv("data/Other studies/BEAT/BEAT_AML_mutations.csv", row.names = 1)
+# mut.BEAT <- read.csv("data/Other studies/BEAT/BEAT_AML_mutations.csv", row.names = 1)
 
 # BEAT has healthy samples, filtering those from the matrices
 patients.BEAT <- rownames(meta.BEAT)
 
 count.BEAT <- count.BEAT[,patients.BEAT]
 meta.BEAT  <- meta.BEAT [patients.BEAT,]
-mut.BEAT   <- mut.BEAT  [patients.BEAT,]
+# mut.BEAT   <- mut.BEAT  [patients.BEAT,]
 
 
 # primary diagnoses
@@ -718,7 +832,7 @@ mapped.genes <- ens2gene$symbol[m]
 # duplicated name/NA/mitochondrial genes
 removed.genes <- duplicated(mapped.genes) | is.na(mapped.genes) | grepl("^MT", mapped.genes)
 
-count.BEAT <- count.BEAT[!removed.genes,meta.BEAT$ID]
+count.BEAT <- count.BEAT[!removed.genes,rownames(meta.BEAT)]
 rownames(count.BEAT) <- mapped.genes[!removed.genes]
 
 T.eset <- ExpressionSet(assayData = as.matrix(count.BEAT))
@@ -730,7 +844,7 @@ deconv.BEAT <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'labe
 
 
 ```{r cache=TRUE, fig.width=16, fig.height=5.5}
-ann.row.BEAT <- as.data.frame(cbind(pdiagnoses.BEAT, Blast = meta.BEAT$blasts, Stemness = meta.BEAT$stemness))
+ann.row.BEAT <- as.data.frame(cbind.data.frame(pdiagnoses.BEAT, Blast = meta.BEAT$blasts, Stemness = meta.BEAT$stemness, ELN = meta.BEAT$eln_risk_classification))
 
 rownames(ann.row.BEAT) <- colnames(count.BEAT)
 
@@ -741,10 +855,13 @@ clusters.BEAT <- apply(deconv.BEAT > 0.5, 1, function(x){
 })
 
 
-# assigning colors for reproducibility
-ann.colors <- list(cluster = cell.type.colors[ unique(clusters.BEAT)])
 
-new.order.BEAT <- names(clusters.BEAT %>% sort)
+# We don't know it so, assigned to intermediate
+ann.row.BEAT$ELN[ann.row.BEAT$ELN %in% c("Not Reported")] <- NA
+
+
+# new.order.BEAT <- names(clusters.BEAT %>% sort)
+new.order.BEAT <- patientOrder(deconv.BEAT, clusters.BEAT, cell.type.order)
 
 # some of the Blast levels are NA, imputing those using the ones that exists
 df.blast <- as.data.frame(cbind(Blast = meta.BEAT$blasts, deconv.BEAT))
@@ -759,7 +876,14 @@ ann.row.BEAT <- as.data.frame(subset(ann.row.BEAT, select= -c(Blast)))
 
 
 
+ELN.colors = c("Favorable" = "#00b533", "Intermediate"= "#d6d300", "Adverse" = "#D5232F")
+FAB.colors = paletteer_d("awtools::a_palette")
+names(FAB.colors) <- paste0("M", 0:7)
+ann.colors <- list(cluster = cell.type.colors[ unique(clusters.BEAT)], 
+                   ELN = ELN.colors, FAB = FAB.colors)
 
+breaksList = seq(0,1, by = .001)
+pheatmap.colors <- colorRampPalette((brewer.pal(n = 7, name = "Blues")))(length(breaksList))
 
 pmap.BEAT <- pheatmap(t(deconv.BEAT[new.order.BEAT, intersect(cell.type.order, colnames(deconv.BEAT))]),
              cluster_cols = F, cluster_rows = F, show_rownames = T, show_colnames = F,
@@ -768,13 +892,13 @@ pmap.BEAT <- pheatmap(t(deconv.BEAT[new.order.BEAT, intersect(cell.type.order, c
              color = pheatmap.colors, 
              annotation_colors = ann.colors,
              breaks = breaksList, border_color = NA,
-             gaps_col = cumsum(table(clusters.BEAT[new.order.BEAT])))
+             gaps_col = cumsum(table(clusters.BEAT[new.order.BEAT])[unique(clusters.BEAT[new.order.BEAT])]))
 pmap.BEAT
 ```
 
 ```{r include=FALSE}
 if(saveFigs){
-    pdf("output/Music_BEAT_deconvolution_via_integrated_pseudobulk_simple_clustering.pdf", width = 16, height = 5.5)
+    pdf("output/Music_BEAT_deconvolution_via_integrated_pseudobulk_simple_clustering.pdf", width = 18, height = 5.5)
     pmap.BEAT
     dev.off()
 }
@@ -783,13 +907,13 @@ if(saveFigs){
 
 ```{r BEAT immune composition clusters KM plots, fig.height=5}
 
-temp.BEAT <- cbind(meta.BEAT, cluster = clusters.BEAT)
+temp.BEAT <- cbind(meta.BEAT, cluster = clusters.BEAT, ELN = meta.BEAT$eln_risk_classification)
+temp.BEAT$status <- ifelse(temp.BEAT$event == "Alive", 0,ifelse(temp.BEAT$event == "Dead", 1, NA))
 
 # redefine groups <15 patients as 'Others'
 temp.BEAT <- temp.BEAT %>%  dplyr::add_count(cluster)
 temp.BEAT$cluster.refined <- ifelse(temp.BEAT$n > 15, temp.BEAT$cluster, "Others")
 
-temp.BEAT$status <- ifelse(temp.BEAT$event == "Alive", 0,ifelse(temp.BEAT$event == "Dead", 1, NA))
 
 km_trt_fit <- survfit(Surv(overal_survival, status) ~ cluster.refined, data=temp.BEAT)
 
@@ -824,32 +948,24 @@ if(saveFigs){
 ```
 
 
+```{r BEAT ELN CLASSES}
+temp.BEAT$ELN.refined <- temp.BEAT$ELN
+temp.BEAT$ELN.refined [temp.BEAT$ELN.refined %in% c("Not Reported")] <- NA
 
-```{r}
-temp.BEAT$g1 <- ifelse(temp.BEAT$primary_diagnosis %in% c("Acute promyelocytic leukaemia, PML-RAR-alpha", 
-                                                          "Acute myeloid leukemia, CBF-beta/MYH11", 
-                                                          "Acute myeloid leukemia with t(8;21)(q22;q22); RUNX1-RUNX1T1"),
-                       "Promyelocytes/GMPs (3 groups)", NA)
-
+km_trt_fit <- survfit(Surv(overal_survival, status) ~ ELN.refined, data=temp.BEAT)
 
 
-temp.BEAT[(!(temp.BEAT$g1 %in% "Promyelocytes/GMPs (3 groups)") & 
-               temp.BEAT$cluster %in% c("Promyelocytes / GMPs")), "g1"] <-  "Promyelocytes/GMPs (Others)"
 
-
-km_trt_fit <- survfit(Surv(overal_survival, status) ~ g1, data=temp.BEAT[!is.na(temp.BEAT$g1), ])
-
-
-plot.promyelocytes.BEAT <- 
+plot.ELN.BEAT <- 
     ggsurvplot(km_trt_fit, 
            pval = T,
            # surv.median.line = "hv", # Add medians survival
           
            # Change legends: title & labels
           legend.title = "Cluster",
-          legend.labs = gsub("g1=", "", names(km_trt_fit$strata)),
+          legend.labs = gsub("ELN.refined=", "", names(km_trt_fit$strata)),
            
-           palette = "lancet",  
+           palette = ELN.colors,  
            
            # # Add risk table
            risk.table = TRUE,
@@ -858,8 +974,46 @@ plot.promyelocytes.BEAT <-
            
            ggtheme = theme_bw(base_size = 12))
 
-plot.promyelocytes.BEAT
+plot.ELN.BEAT
 ```
+
+```{r include=FALSE}
+if(saveFigs){
+    pdf("output/BEAT_ELN_KM.pdf")
+    print(plot.ELN.BEAT, newpage = F)
+    dev.off()
+}
+```
+
+
+
+Distribution of WHO classes in Promyelocytes
+```{r}
+pdf("output/BEAT_Promyelocytes_WHO_classes.pdf", height = 2, width = 6)
+temp.BEAT %>% filter(cluster == "Promyelocytes / GMPs") %>% 
+  ggplot(aes(x = as.factor(primary_diagnosis))) + 
+  geom_bar(fill="steelblue")+ coord_flip() + xlab("") + 
+  theme.gg
+dev.off()
+```
+
+```{r TCGA Promyelocytes - MPP survival}
+temp.BEAT$`MPP%` <- deconv.BEAT[,"Multipotent progenitors (MPPs)"]
+temp.BEAT$`Myelocyte%` <- deconv.BEAT[,"Myelocyte"]
+temp.BEAT$APL <- ifelse(temp.BEAT$primary_diagnosis == "Acute promyelocytic leukaemia, PML-RAR-alpha", 1, 0)
+
+model <- coxph(Surv(overal_survival, status) ~ age_at_diagnosis + gender + APL + `MPP%` + `Myelocyte%` , 
+               data = temp.BEAT %>% filter(cluster == "Promyelocytes / GMPs"))
+
+pro.gmp.mpp.cox.plot <- ggforest(model, cpositions = c(0, 0.15, 0.35))
+
+if(saveFigs){
+  pdf("output/BEAT_Promyelocytes_MPP_percentage_forest.pdf")
+  pro.gmp.mpp.cox.plot
+  dev.off()
+}
+```
+
 
 ```{r BEAT Forest plot, fig.width=14, fig.height=10}
 temp.BEAT$g2 <- ifelse(!is.na(temp.BEAT$g1), temp.BEAT$g1, temp.BEAT$primary_diagnosis)
@@ -878,6 +1032,9 @@ model <- coxph(Surv(overal_survival, status) ~ age_at_diagnosis + gender + g2 ,
 pro.gmp.cox.plot <- ggforest(model, data = temp.BEAT, cpositions = c(0, 0.12, 0.35))
 pro.gmp.cox.plot
 ```
+
+
+
 
 ```{r NPM1 for different cluster assignments BEAT}
 temp.BEAT$NPM1.cluster <- ifelse(temp.BEAT$primary_diagnosis_refined == "Acute myeloid leukemia with mutated NPM1",
@@ -910,6 +1067,16 @@ plot.promyelocytes.NPM1.BEAT <-
 
 plot.promyelocytes.NPM1.BEAT
 ```
+
+```{r include=FALSE}
+if(saveFigs){
+    pdf("output/BEAT_Pro_vs_Others_KM_for_NPM1.pdf")
+    print(plot.promyelocytes.NPM1.BEAT, newpage = F)
+    dev.off()
+}
+```
+
+
 ```{r BEAT-AML NOS comparison for immune compositions}
 ## WHO 2016 NOS classification
 # AML without maturation 
@@ -952,15 +1119,76 @@ plot.promyelocytes.NOS.BEAT <-
 plot.promyelocytes.NOS.BEAT
 ```
 
+```{r include=FALSE}
+if(saveFigs){
+    pdf("output/BEAT_Pro_vs_Others_KM_for_NOS.pdf")
+    print(plot.promyelocytes.NOS.BEAT, newpage = F)
+    dev.off()
+}
+```
+
+```{r}
+
+temp.BEAT$ELN.cluster <- temp.BEAT$ELN.refined
+
+temp.BEAT$ELN.cluster <- ifelse(temp.BEAT$ELN.refined == "Adverse",
+                                "All (ELN - Poor)", 
+                                temp.BEAT$ELN.cluster)
+temp.BEAT$ELN.cluster <- ifelse(temp.BEAT$ELN.refined == "Intermediate",
+                                ifelse(temp.BEAT$cluster == "Promyelocytes / GMPs", 
+                                        "Promyelocytes/GMPs (ELN - Intermediate)", "Others (ELN - Intermediate)"),
+                                temp.BEAT$ELN.cluster)
+
+temp.BEAT$ELN.cluster <- ifelse(temp.BEAT$ELN.refined == "Favorable",
+                                "All (ELN - Good)",
+                                temp.BEAT$ELN.cluster)
+
+
+km_trt_fit <- survfit(Surv(overal_survival, status) ~ ELN.cluster, data=temp.BEAT[!is.na(temp.BEAT$ELN.cluster), ])
+
+
+plot.promyelocytes.ELN.BEAT <- 
+    ggsurvplot(km_trt_fit, 
+           pval = T,
+           # surv.median.line = "hv", # Add medians survival
+          
+           # Change legends: title & labels
+          legend.title = "Cluster",
+          legend.labs = gsub("ELN.cluster=", "", names(km_trt_fit$strata)),
+           
+           palette = ELN.IP.colors,  
+           
+           # # Add risk table
+           risk.table = TRUE,
+           tables.height = 0.25, legend = "none",
+           tables.theme = theme_cleantable(),
+           
+           ggtheme = theme_bw(base_size = 12))
+
+plot.promyelocytes.ELN.BEAT$plot <- plot.promyelocytes.ELN.BEAT$plot +   
+  geom_step(data = plot.ELN.BEAT$data.survplot %>% filter(ELN.refined == "Intermediate"), 
+            aes(time, surv), linetype = 2, color = ELN.colors["Intermediate"])
+
+plot.promyelocytes.ELN.BEAT
+```
+```{r include=FALSE}
+if(saveFigs){
+  pdf("output/BEAT_Pro_vs_Others_KM_for_ELN.pdf")
+  print(plot.promyelocytes.ELN.BEAT, newpage = F)
+  dev.off()
+}
+```
+
 
 
 ### TARGET-AML
 ```{r TARGET deconvolution, cache=TRUE}
-count.TARGET <- read.csv("data/Other studies/TARGET/TARGET_ht_seq.csv")
+count.TARGET <- read.csv("data/Studies_Latest/TARGET/TARGET_ht_seq.csv")
 
 count.TARGET <- wrangleMat(count.TARGET)
 
-meta.TARGET <- read.csv("data/Other studies/TARGET/TARGET_ht_seq_meta.csv", row.names = 1)
+meta.TARGET <- read.csv("data/Studies_Latest/TARGET/TARGET_clinical_mut_meta.csv", row.names = 1)
+meta.TARGET$sample <- rownames(meta.TARGET)
 meta.TARGET$stemness <- calculateStemness(count.TARGET)
 
 meta.TARGET$primary_diagnosis_refined <- meta.TARGET$primary_diagnosis
@@ -987,8 +1215,7 @@ meta.TARGET[meta.TARGET$primary_diagnosis == "KMT2A-MLLT10", "primary_diagnosis_
     "Acute myeloid leukemia with t(10;11)(p12;q23.3); MLLT10-KMT2A"
 
 
-
-mut.TARGET <- read.csv("data/Other studies/TARGET/TARGET_mutations_df_3.csv", row.names = 1)
+# mut.TARGET <- read.csv("data/Other studies/TARGET/TARGET_mutations_df_3.csv", row.names = 1)
 
 # primary diagnoses
 pdiagnoses.TARGET <- stats::model.matrix(~ 0 + meta.TARGET$primary_diagnosis_refined)
@@ -1019,9 +1246,12 @@ deconv.TARGET <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'la
 
 
 ```{r fig.width=15, fig.height=5}
-ann.row.TARGET <- as.data.frame(cbind(pdiagnoses.TARGET, Blast.BM = meta.TARGET$BM_blasts, 
-                                      Blast.PB = meta.TARGET$PB_blasts, 
-                                      Stemness = meta.TARGET$stemness))
+ann.row.TARGET <- as.data.frame(cbind.data.frame(pdiagnoses.TARGET, 
+                                      Blast.BM = meta.TARGET$Bone.marrow.leukemic.blast.percentage...., 
+                                      Blast.PB = meta.TARGET$Peripheral.blasts...., 
+                                      Stemness = meta.TARGET$stemness, 
+                                      FAB = meta.TARGET$FAB.Category,
+                                      ELN = meta.TARGET$Risk.group))
 
 rownames(ann.row.TARGET) <- colnames(count.TARGET)
 
@@ -1031,26 +1261,38 @@ clusters.TARGET <- apply(deconv.TARGET > 0.5, 1, function(x){
   ifelse(length(x[x]) > 0, names(x[x]), "Mixed Profiles")
 }) 
 
+ann.row.TARGET$ELN[ann.row.TARGET$ELN == "Unknown"] <- NA
+ann.row.TARGET$FAB[ann.row.TARGET$FAB %in% c("Unknown", "NOS") ] <- NA
+
+# assigning colors for reproducibility 
+ELN.colors = c("Low" = "#00b533", "Standard"= "#d6d300", "High" = "#D5232F")
+FAB.colors = paletteer_d("awtools::a_palette")
+names(FAB.colors) <- paste0("M", 0:7)
+ann.colors <- list(cluster = cell.type.colors[ unique(clusters.TARGET)], 
+                   ELN = ELN.colors, FAB = FAB.colors)
 
 
-# assigning colors for reproducibility
-ann.colors <- list(cluster = cell.type.colors[ unique(clusters.TARGET)])
 
-new.order.TARGET <- names(clusters.TARGET %>% sort)
+# new.order.TARGET <- names(clusters.TARGET %>% sort)
+new.order.TARGET <- patientOrder(deconv.TARGET, clusters.TARGET, cell.type.order)
+
+
+breaksList = seq(0,1, by = .001)
+pheatmap.colors <- colorRampPalette((brewer.pal(n = 7, name = "Blues")))(length(breaksList))
 
 pmap.TARGET <- pheatmap(t(deconv.TARGET [new.order.TARGET, intersect(cell.type.order, colnames(deconv.TARGET))]),
          cluster_cols = F, cluster_rows = F, show_rownames = T, show_colnames = F,
          annotation_col = cbind(ann.row.TARGET[new.order.TARGET,], cluster = clusters.TARGET[new.order.TARGET]),
          annotation_colors = ann.colors,
          color = pheatmap.colors, breaks = breaksList, border_color = NA, 
-         gaps_col = cumsum(table(clusters.TARGET[new.order.TARGET])))
+         gaps_col = cumsum(table(clusters.TARGET[new.order.TARGET])[unique(clusters.TARGET[new.order.TARGET])]))
 
 pmap.TARGET
 ```
 
 ```{r include=FALSE}
 if(saveFigs){
-    pdf("output/TARGET_Kaplan_Meier_simple_clustering.pdf", height = 5, width = 15)
+    pdf("output/Music_TARGET_deconvolution_via_integrated_pseudobulk_simple_clustering.pdf", height = 5.5, width = 16)
     print(pmap.TARGET, newpage = F)
     dev.off()
 }
@@ -1059,59 +1301,30 @@ if(saveFigs){
 
 ```{r survival analyses TARGET}
 temp.TARGET <- cbind(meta.TARGET, cluster = clusters.TARGET)
-temp.TARGET$status <- ifelse(temp.TARGET$event == "Dead", 1,0)
-
-
-temp.TARGET$g1 <- ifelse(temp.TARGET$primary_diagnosis %in% c("inv(16) CBF-beta/MYH11", 
-                                                              "t(8;21) RUNX1-RUNX1T1"),
-                       "Promyelocytes/GMPs (2 groups)", NA)
-
-temp.TARGET[(!(temp.TARGET$g1 %in% "Promyelocytes/GMPs (2 groups)") & 
-               temp.TARGET$cluster %in% c("Promyelocytes / GMPs")), "g1"] <-  "Promyelocytes/GMPs (Others)"
-
-
-km_trt_fit <- survfit(Surv(overal_survival, status) ~ g1, data=temp.TARGET[!is.na(temp.TARGET$g1), ])
-
-
-plot.promyelocytes.TARGET <- 
-    ggsurvplot(km_trt_fit, 
-           pval = T,
-           # surv.median.line = "hv", # Add medians survival
-          
-           # Change legends: title & labels
-          legend.title = "Cluster",
-          legend.labs = gsub("g1=", "", names(km_trt_fit$strata)),
-           
-           palette = "lancet",  
-           
-           # # Add risk table
-           risk.table = TRUE,
-           tables.height = 0.25, legend = "none",
-           tables.theme = theme_cleantable(),
-           
-           ggtheme = theme_bw(base_size = 12))
-
-plot.promyelocytes.TARGET
-```
-
-
-```{r survival analyses TARGET2, include=FALSE}
-# # simple clustering
-# temp.TARGET$cluster <- clusters.TARGET
-# temp.TARGET <- temp.TARGET %>%  dplyr::add_count(cluster) 
-# temp.TARGET$cluster.refined <- ifelse(temp.TARGET$n > 20, temp.TARGET$cluster, "Others")
+temp.TARGET$status <- ifelse(temp.TARGET$Vital.Status == "Dead", 1,0)
 # 
-# km_trt_fit <- survfit(Surv(overal_survival, status) ~ cluster.refined, data=temp.TARGET)
-# pdf("output/TARGET_Kaplan_Meier_simple_clustering.pdf")
-# p <- ggsurvplot(km_trt_fit, 
+# 
+# temp.TARGET$g1 <- ifelse(temp.TARGET$primary_diagnosis %in% c("inv(16) CBF-beta/MYH11", 
+#                                                               "t(8;21) RUNX1-RUNX1T1"),
+#                        "Promyelocytes/GMPs (2 groups)", NA)
+# 
+# temp.TARGET[(!(temp.TARGET$g1 %in% "Promyelocytes/GMPs (2 groups)") & 
+#                temp.TARGET$cluster %in% c("Promyelocytes / GMPs")), "g1"] <-  "Promyelocytes/GMPs (Others)"
+# 
+# 
+# km_trt_fit <- survfit(Surv(overal_survival, status) ~ g1, data=temp.TARGET[!is.na(temp.TARGET$g1), ])
+# 
+# 
+# plot.promyelocytes.TARGET <- 
+#     ggsurvplot(km_trt_fit, 
 #            pval = T,
 #            # surv.median.line = "hv", # Add medians survival
 #           
 #            # Change legends: title & labels
 #           legend.title = "Cluster",
-#           legend.labs = gsub("cluster.refined=", "", names(km_trt_fit$strata)),
+#           legend.labs = gsub("g1=", "", names(km_trt_fit$strata)),
 #            
-#            palette = "npg",  
+#            palette = "lancet",  
 #            
 #            # # Add risk table
 #            risk.table = TRUE,
@@ -1120,20 +1333,116 @@ plot.promyelocytes.TARGET
 #            
 #            ggtheme = theme_bw(base_size = 12))
 # 
-# print(p, newpage = F)
-# dev.off()
-
+# plot.promyelocytes.TARGET
 ```
 
-```{r TARGET Promyelocytes forestplot, fig.width=10}
-temp.TARGET$g2 <- ifelse(!is.na(temp.TARGET$g1), temp.TARGET$g1, temp.TARGET$primary_diagnosis)
 
-model <- coxph(Surv(overal_survival, status) ~ age_at_diagnosis + gender + g2, 
-               data = temp.TARGET)
+```{r survival analyses TARGET2, include=FALSE}
+# simple clustering
+temp.TARGET$cluster <- clusters.TARGET
+temp.TARGET <- temp.TARGET %>%  dplyr::add_count(cluster)
+temp.TARGET$cluster.refined <- ifelse(temp.TARGET$n > 20, temp.TARGET$cluster, "Others")
 
-pro.gmp.cox.plot <- ggforest(model, data = temp.TARGET, cpositions = c(0, 0.15, 0.35))
-pro.gmp.cox.plot
+km_trt_fit <- survfit(Surv(Overall.Survival.Time.in.Days, status) ~ cluster.refined,
+                       data=temp.TARGET)
+                      
+
+plot.surv.TARGET<- ggsurvplot(km_trt_fit,
+           pval = T,
+           # surv.median.line = "hv", # Add medians survival
+
+           # Change legends: title & labels
+          legend.title = "Cluster",
+          legend.labs = gsub("cluster.refined=", "", names(km_trt_fit$strata)),
+
+           palette = cell.type.colors[gsub("cluster.refined=", "", names(km_trt_fit$strata))],
+
+           # # Add risk table
+           risk.table = TRUE,
+           tables.height = 0.25, legend = "none",
+           tables.theme = theme_cleantable(),
+
+           ggtheme = theme_bw(base_size = 12))
+plot.surv.TARGET
 ```
+
+
+```{r  include=FALSE}
+if(saveFigs){
+  pdf("output/TARGET_Kaplan_Meier_simple_clustering.pdf")
+  print(plot.surv.TARGET, newpage = F)
+  dev.off()
+}
+```
+
+```{r TARGET ELN }
+
+temp.TARGET$ELN <- temp.TARGET$Risk.group
+temp.TARGET$ELN[temp.TARGET$ELN == 'Unknown'] <- NA
+
+km_trt_fit <- survfit(Surv(Overall.Survival.Time.in.Days, status) ~ ELN,
+                       data=temp.TARGET)
+
+plot.surv.ELN.TARGET<- ggsurvplot(km_trt_fit,
+           pval = T,
+           # surv.median.line = "hv", # Add medians survival
+
+           # Change legends: title & labels
+          legend.title = "Cluster",
+          legend.labs = gsub("ELN=", "", names(km_trt_fit$strata)),
+
+           palette = ELN.colors,
+
+           # # Add risk table
+           risk.table = TRUE,
+           tables.height = 0.25, legend = "none",
+           tables.theme = theme_cleantable(),
+
+           ggtheme = theme_bw(base_size = 12))
+
+plot.surv.ELN.TARGET
+```
+```{r include = FALSE}
+if(saveFigs){
+    pdf("output/TARGET_ELN_KM.pdf")
+    print(plot.surv.ELN.TARGET, newpage =F)
+    dev.off()
+}
+```
+
+
+Distribution of WHO classes in Promyelocytes
+```{r}
+pdf("output/TARGET_Promyelocytes_WHO_classes.pdf", height = 2, width = 6)
+temp.TARGET %>% filter(cluster == "Promyelocytes / GMPs") %>% 
+  ggplot(aes(x = as.factor(primary_diagnosis_refined))) + 
+  geom_bar(fill="steelblue")+ coord_flip() + xlab("") + 
+  theme.gg
+dev.off()
+```
+
+```{r TCGA Promyelocytes - MPP survival}
+temp.TARGET$`MPP%` <- deconv.TARGET[,"Multipotent progenitors (MPPs)"]
+temp.TARGET$`Myelocyte%` <- deconv.TARGET[,"Myelocyte"]
+temp.TARGET$APL <- ifelse(temp.TARGET$primary_diagnosis == "Acute promyelocytic leukaemia, PML-RAR-alpha", 1, 0)
+
+temp.TARGET$overal_survival <- temp.TARGET$Overall.Survival.Time.in.Days
+temp.TARGET$age_at_diagnosis <- temp.TARGET$Age.at.Diagnosis.in.Days
+temp.TARGET$gender <- temp.TARGET$Gender
+model <- coxph(Surv(overal_survival, status) ~ age_at_diagnosis + gender + `MPP%` + `Myelocyte%` , 
+               data = temp.TARGET %>% filter(cluster == "Promyelocytes / GMPs"))
+
+pro.gmp.mpp.cox.plot <- ggforest(model, cpositions = c(0, 0.15, 0.35))
+
+if(saveFigs){
+  pdf("output/TARGET_Promyelocytes_MPP_percentage_forest.pdf")
+  pro.gmp.mpp.cox.plot
+  dev.off()
+}
+```
+
+
+
 ```{r NPM1 for different cluster assignments TARGET}
 temp.TARGET$NPM1.cluster <- ifelse(temp.TARGET$primary_diagnosis == "Mutated NPM1",
                                  ifelse(temp.TARGET$cluster == "Promyelocytes / GMPs",
@@ -1166,6 +1475,14 @@ plot.promyelocytes.NPM1.TARGET <-
 plot.promyelocytes.NPM1.TARGET
 ```
 
+```{r include=FALSE}
+if(saveFigs){
+    pdf("output/TARGET_Pro_vs_Others_KM_for_NPM1.pdf")
+    print(plot.promyelocytes.NPM1.TARGET, newpage =F)
+    dev.off()
+}
+```
+
 
 ```{r TARGET-AML NOS classification}
 temp.TARGET$NOS.cluster <- ifelse(temp.TARGET$primary_diagnosis == "Acute myeloid leukemia, NOS",
@@ -1196,3 +1513,206 @@ plot.promyelocytes.NOS.TARGET <-
 
 plot.promyelocytes.NOS.TARGET
 ```
+```{r include=FALSE}
+if(saveFigs){
+    pdf("output/TARGET_Pro_vs_Others_KM_for_NOS.pdf")
+    print(plot.promyelocytes.NOS.TARGET, newpage = F)
+    dev.off()
+}
+
+```
+
+
+```{r}
+temp.TARGET$ELN.cluster<- temp.TARGET$ELN
+temp.TARGET$ELN.cluster <- ifelse(temp.TARGET$Risk.group == "High",
+                                  "All (ELN - Poor)",
+                                  temp.TARGET$ELN.cluster)
+temp.TARGET$ELN.cluster <- ifelse(temp.TARGET$Risk.group == "Standard",
+                                ifelse(temp.TARGET$cluster == "Promyelocytes / GMPs", 
+                                        "Promyelocytes/GMPs (ELN - Intermediate)", "Others (ELN - Intermediate)"),
+                                temp.TARGET$ELN.cluster)
+temp.TARGET$ELN.cluster <- ifelse(temp.TARGET$Risk.group == "Low",
+                                  "All (ELN - Good)",
+                                temp.TARGET$ELN.cluster)
+
+km_trt_fit <- survfit(Surv(Overall.Survival.Time.in.Days, status) ~ ELN.cluster, data=temp.TARGET[!is.na(temp.TARGET$ELN.cluster), ])
+
+
+plot.promyelocytes.ELN.TARGET<- 
+    ggsurvplot(km_trt_fit, 
+           pval = T,
+           # surv.median.line = "hv", # Add medians survival
+          
+           # Change legends: title & labels
+          legend.title = "Cluster",
+          legend.labs = gsub("ELN.cluster=", "", names(km_trt_fit$strata)),
+           
+           palette = ELN.IP.colors,  
+           
+           # # Add risk table
+           risk.table = TRUE,
+           tables.height = 0.25, legend = "none",
+           tables.theme = theme_cleantable(),
+           
+           ggtheme = theme_bw(base_size = 12))
+
+plot.promyelocytes.ELN.TARGET$plot <- plot.promyelocytes.ELN.TARGET$plot+ 
+  geom_step(data = plot.surv.ELN.TARGET$data.survplot %>% filter(ELN == "Standard"), 
+            aes(time, surv), linetype = 2, color = ELN.colors["Standard"])
+
+plot.promyelocytes.ELN.TARGET
+```
+```{r include=FALSE}
+if(saveFigs){
+  pdf("output/TARGET_Pro_vs_Others_KM_for_ELN.pdf")
+  print(plot.promyelocytes.ELN.TARGET, newpage = F)
+  dev.off()
+}
+```
+
+
+
+## LEUCEGENE
+```{r}
+count.LEUCE <- read.csv("data/Other studies/LEUCEGENE/Leucegene_count_matrix.csv", check.names = F)
+
+count.LEUCE <- wrangleMat(count.LEUCE)
+
+
+meta.LEUCE <- read.csv("data/Other studies/LEUCEGENE/Leucegene_meta_data.csv", row.names = 1)
+
+meta.LEUCE$primary_diagnosis <- meta.LEUCE$WHO.classification
+
+
+meta.LEUCE$primary_diagnosis <- ifelse(meta.LEUCE$primary_diagnosis %in% c("Acute myeloid leukemia, NOS",
+                                                                   "\"\"Acute myeloid leukaemia, NOS\"\"",
+                                                                   "AML with maturation",
+                                                                   "Acute myeloid leukemia with maturation",
+                                                                   "AML without maturation",
+                                                                   "Acute myeloid leukemia without maturation",
+                                                                   "AML with minimal differentiation",
+                                                                   "Acute myeloid leukemia, minimal differentiation",
+                                                                   "Acute myelomonocytic leukaemia",
+                                                                   "Acute myelomonocytic leukemia",
+                                                                   "Acute monoblastic and monocytic leukemia",
+                                                                   "Acute monoblastic and monocytic leukaemia",
+                                                                   "Acute erythroid leukaemia",
+                                                                   "Acute megakaryoblastic leukaemia",
+                                                                   "Acute basophilic leukemia",
+                                                                   "Acute panmyelosis with myelofibrosis"), 
+                                              "Acute myeloid leukemia, NOS", meta.LEUCE$primary_diagnosis)
+
+
+meta.LEUCE[meta.LEUCE$primary_diagnosis %in% 
+             c("AML with inv(16)(p13.1q22) or t(16;16)(p13.1;q22); CBFB-MYH11"), "primary_diagnosis"] <- 
+    "Acute myeloid leukemia, CBF-beta/MYH11"
+
+
+meta.LEUCE[meta.LEUCE$primary_diagnosis %in% 
+             c("AML with inv(3)(q21q26.2) or t(3;3)(q21;q26.2); RPN1-EVI1"), "primary_diagnosis"] <- 
+    "Acute myeloid leukemia with inv(3)(q21q26.2) or t(3;3)(q21;q26.2); RPN1-EVI1"
+
+
+meta.LEUCE[meta.LEUCE$primary_diagnosis %in% 
+             c("AML with t(8;21)(q22;q22); RUNX1-RUNX1T1"), "primary_diagnosis"] <- 
+    "Acute myeloid leukemia with t(8;21)(q22;q22); RUNX1-RUNX1T1"
+
+
+meta.LEUCE[meta.LEUCE$primary_diagnosis %in% 
+             c("AML with t(9;11)(p22;q23); MLLT3-MLL"), "primary_diagnosis"] <- 
+    "Acute myeloid leukemia with t(9;11)(p22;q23); MLLT3-MLL"
+
+meta.LEUCE[meta.LEUCE$primary_diagnosis %in% 
+             c("Acute promyelocytic leukaemia with t(15;17)(q24;q21); PML-RARA"), "primary_diagnosis"] <- 
+    "Acute promyelocytic leukaemia, PML-RAR-alpha"
+
+
+meta.LEUCE[meta.LEUCE$primary_diagnosis %in% 
+             c("AML with t(6;9)(p23;q34); DEK-NUP214"), "primary_diagnosis"] <- 
+    "Acute myeloid leukemia with t(6;9)(p23;q34); DEK-NUP214"
+
+
+meta.LEUCE[meta.LEUCE$primary_diagnosis %in% 
+             c("AML with myelodysplasia-related changes"), "primary_diagnosis"] <-
+    "Acute myeloid leukemia with myelodysplasia-related changes"
+
+
+meta.LEUCE[meta.LEUCE$primary_diagnosis %in%
+             c("Therapy-related myeloid neoplasms"), "primary_diagnosis"] <-
+    "Therapy related myeloid neoplasm"
+
+
+
+# primary diagnoses
+pdiagnoses.LEUCE <- stats::model.matrix(~ 0 + meta.LEUCE$primary_diagnosis)
+colnames(pdiagnoses.LEUCE) <- sub(pattern = "meta.LEUCE\\$primary_diagnosis", 
+                                 replacement = "", colnames(pdiagnoses.LEUCE))
+
+
+
+T.eset <- ExpressionSet(assayData = as.matrix(count.LEUCE))
+
+deconv.LEUCE <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'label',
+                                            markers = NULL, normalize = FALSE, samples = 'Sample', 
+                                            verbose = F)$Est.prop.weighted
+```
+
+
+```{r}
+
+meta.LEUCE$FAB <- ifelse(meta.LEUCE$FAB.classification == "Not classifiable by FAB criteria", NA,meta.LEUCE$FAB.classification)
+meta.LEUCE$FAB <- sub(".*-", "", meta.LEUCE$FAB)  %>% substr(1,2) 
+
+
+
+
+# TCGA patient annotations 
+ann.row.LEUCE <- as.data.frame(cbind.data.frame(pdiagnoses.LEUCE, 
+                                    FAB = meta.LEUCE[,"FAB"]
+                                    # ELN = meta.TCGA[,"RISK_MOLECULAR"],
+                                    # Stemness = meta.TCGA[,"stemness"]),
+                                    ))
+
+rownames(ann.row.LEUCE) <- colnames(count.LEUCE)
+
+
+# assignment threshold
+clusters.LEUCE <- apply(deconv.LEUCE > 0.5, 1, function(x){
+  ifelse(length(x[x]) > 0, names(x[x]), "Mixed Profiles")
+}) 
+
+
+FAB.colors = paletteer_d("awtools::a_palette")
+names(FAB.colors) <- paste0("M", 0:7)
+ann.colors <- list(cluster = cell.type.colors[ unique(clusters.LEUCE)], 
+                   FAB = FAB.colors)
+
+
+#new.order.LEUCE <- names(clusters.LEUCE %>% sort)
+new.order.LEUCE <- patientOrder(deconv.LEUCE, clusters.LEUCE, cell.type.order)
+
+pmap.LEUCE <- pheatmap(t(deconv.LEUCE [new.order.LEUCE, intersect(cell.type.order, colnames(deconv.LEUCE))]),
+         cluster_cols = F, cluster_rows = F, show_rownames = T, show_colnames = F,
+         annotation_col = cbind(ann.row.LEUCE[new.order.LEUCE,], cluster = clusters.LEUCE[new.order.LEUCE]),
+         annotation_colors = ann.colors,
+         color = pheatmap.colors, breaks = breaksList, border_color = NA, 
+         gaps_col = cumsum(table(clusters.LEUCE[new.order.LEUCE])[unique(clusters.LEUCE[new.order.LEUCE])]))
+
+pmap.LEUCE
+```
+
+```{r include=FALSE}
+if(saveFigs){
+    pdf("output/Music_LEUCEGENE_deconvolution_via_integrated_pseudobulk_simple_clustering.pdf", height = 5, width = 17)
+    print(pmap.LEUCE, newpage = F)
+    dev.off()
+}
+```
+
+
+```{r}
+temp.LEUCE <- cbind(meta.LEUCE, cluster = clusters.LEUCE)
+```
+
+

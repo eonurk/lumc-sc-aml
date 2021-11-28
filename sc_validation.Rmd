@@ -1,0 +1,175 @@
+---
+title: "Deconvolution of single cell samples"
+author: "E Onur Karakaslar"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LUMC/")
+```
+
+```{r import libraries and utils, include=TRUE, message=FALSE, warning=FALSE}
+library(MuSiC) # deconvolution method
+library(xbioc) # required for MusiC to run
+library(dplyr) # %>%
+library(ggplot2) # nice plots
+library(pheatmap) # pheatmaps
+library(paletteer) # nice colors
+library(RColorBrewer) # beatiful colors
+library(survminer) # survival analyses (KM-plots)
+library(survival) # survival analyses (surv function)
+
+# save figs 
+saveFigs = FALSE
+
+# load some utility functions
+source("utils/wrangleMat.R") 
+
+# ggplot theme
+theme.gg <- theme_bw(base_size = 10) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+```
+
+
+Importing healthy BM map:
+```{r import BM}
+# loaded healthy BM map
+load("cache/scmap_BM.RDS")
+
+# cell types ordered according to cell counts
+cell.count.df <- plyr::count(as.data.frame(C.eset$label))
+
+cell.type.order <- cell.count.df[rev(order(cell.count.df[,2])), 1]
+cell.type.order
+```
+
+
+```{r}
+aml.vanGalen <- readRDS("data/VanGalen_AML_SeuratObject.RDS")
+#aml.vanGalen <- Seurat::ScaleData(aml.vanGalen)
+#aml.vanGalen <- Seurat::NormalizeData(aml.vanGalen)
+aml.samples.VanGalen <- as.data.frame(AggregateExpression(aml.vanGalen, assays = "RNA", slot = "count"))
+
+
+T.eset <- ExpressionSet(assayData = (as.matrix(aml.samples.VanGalen)))
+
+deconv.AML.VG <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'label',
+                                            markers = NULL, normalize = FALSE, samples = 'Sample', 
+                                            verbose = F)$Est.prop.weighted
+
+```
+
+```{r}
+cell.type.colors <- c(as.vector(paletteer::paletteer_d("ggthemes::Tableau_20")))#, "#7d1a1a", "#595959")
+names(cell.type.colors) <- (c(colnames(deconv.AML.VG)))#, "Mixed Profiles", "Others"))
+```
+
+
+```{r}
+df.deconv.AML.VG <- deconv.AML.VG %>% melt()
+
+df.deconv.AML.VG$Var1 <- gsub("RNA.", "", df.deconv.AML.VG$Var1)
+df.deconv.AML.VG$Sample <- strsplit(df.deconv.AML.VG$Var1, split = ".", fixed = T) %>% sapply(function(x){x[1]})
+pdf("output/VanGalen_AML_samples_music.pdf", width = 12, height = 6)
+ggplot(df.deconv.AML.VG, aes(Var1, value, fill = Var2)) + geom_bar(stat = "identity") + 
+    scale_fill_manual(values = cell.type.colors) + theme.gg + labs(fill = "Cell Types") + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + xlab("Patients/Days") + ylab("Cell Type Fraction") + 
+    facet_grid(~ Sample, scales =  "free_x", space = "free_x") + 
+    theme(strip.background = element_blank(), strip.text = element_blank())
+dev.off()
+
+```
+
+
+```{r Deconvolution of Triana AML samples}
+aml.triana <- readRDS("data/Triana_AML_SeuratObject.rds")
+
+Idents(aml.triana) <- aml.triana$Batch
+aml.samples.Triana <- as.data.frame(AggregateExpression(aml.triana, assays = "RNA", slot = "count"))
+
+
+T.eset <- ExpressionSet(assayData = (as.matrix(aml.samples.Triana)))
+
+deconv.AML.Triana <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'label',
+                                            markers = NULL, normalize = FALSE, samples = 'Sample', 
+                                            verbose = F)$Est.prop.weighted
+
+table(aml.triana$Batch)
+```
+
+
+
+
+
+```{r}
+
+df.deconv.AML.Triana <- deconv.AML.Triana %>% melt()
+
+df.deconv.AML.Triana$Var1 <- gsub("RNA.", "", df.deconv.AML.Triana$Var1)
+
+pdf("output/Triana_AML_samples_music.pdf", width = 8, height = 6)
+ggplot(df.deconv.AML.Triana, aes(Var1, value, fill = Var2)) + geom_bar(stat = "identity") + 
+    scale_fill_manual(values = cell.type.colors) + theme.gg + labs(fill = "Cell Types") + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + xlab("Patients") + ylab("Cell Type Fraction") + 
+    facet_grid(~ Var1, scales =  "free_x", space = "free_x") + 
+    theme(strip.background = element_blank(), strip.text = element_blank())
+dev.off()
+
+```
+
+
+```{r Deconvolution of Petti AML samples}
+
+file.paths <- list.files("data/Petti/", full.names = T)
+
+aml.samples.Petti <- lapply(file.paths, function(x){
+    
+    seuratObj <- readRDS(x)
+    seuratObj <- UpdateSeuratObject(seuratObj)
+    
+    Idents(seuratObj) <- "SeuratObj"
+    
+    pb <- as.data.frame(AggregateExpression(seuratObj, assays = "RNA", slot = "count" ))
+    
+    rm(seuratObj)
+    gc()
+    
+    return(pb)
+})
+
+aml.samples.Petti <- lapply(aml.samples.Petti, function(x){
+  x$gene<- rownames(x)
+  return(x)
+}) 
+
+aml.samples.Petti.df <- aml.samples.Petti %>% reduce(merge, by = "gene")
+colnames(aml.samples.Petti.df) <- c("Gene", list.files("data/Petti/") %>% strsplit(".", fixed = T) %>% sapply(function(x){x[1]}))
+
+rownames(aml.samples.Petti.df) <- aml.samples.Petti.df$Gene
+aml.samples.Petti.df <- aml.samples.Petti.df[,-1]
+
+T.eset <- ExpressionSet(assayData = (as.matrix(aml.samples.Petti.df)))
+
+deconv.AML.Petti <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'label',
+                                            markers = NULL, normalize = FALSE, samples = 'Sample', 
+                                            verbose = F)$Est.prop.weighted
+```
+
+```{r}
+df.deconv.AML.Petti <- deconv.AML.Petti %>% melt()
+
+df.deconv.AML.Petti$Var1 <- gsub("RNA.", "", df.deconv.AML.Petti$Var1)
+
+pdf("output/Petti_AML_samples_music.pdf", width = 5, height = 6)
+ggplot(df.deconv.AML.Petti, aes(as.factor(Var1), value, fill = Var2)) + geom_bar(stat = "identity") + 
+    scale_fill_manual(values = cell.type.colors) + theme.gg + labs(fill = "Cell Types") + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + xlab("Patients") + ylab("Cell Type Fraction") + 
+    facet_grid(~ Var1, scales =  "free_x", space = "free_x") + 
+    theme(strip.background = element_blank(), strip.text = element_blank())
+dev.off()
+
+```
+
+
