@@ -1,0 +1,439 @@
+---
+title: "Differential analyses of bulk RNAseq cohorts"
+author: "E Onur Karakaslar"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LUMC/")
+```
+
+```{r import libraries and utils, include=TRUE, message=FALSE, warning=FALSE}
+library(cinaR) # differential analyses
+library(dplyr) # %>%
+library(ggplot2) # nice plots
+library(ggrepel)
+library(pheatmap) # pheatmaps
+library(paletteer) # nice colors
+library(RColorBrewer) # beatiful colors
+# save figs 
+saveFigs = FALSE
+
+# load some utility functions
+source("utils/wrangleMat.R") 
+
+# ggplot theme
+theme.gg <- theme_bw(base_size = 10) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+```{r}
+load("cache/DA_required_files.RDS")
+
+genemap <- cinaR::grch38
+        
+ens2gene <- function(x, genemap){
+    m <- match(x[, "gene_name"], genemap[, "ensgene", drop = TRUE])
+    mapped.genes <- genemap[, "symbol", drop = TRUE][m]
+    x[, "gene_symbol"] <- mapped.genes
+    return(x)
+}
+```
+
+
+```{r TCGA DA}
+count.TCGA <- read.csv("data/Studies_Latest/TCGA/TCGA_ht_seq.csv")
+
+
+
+temp.TCGA$ELN.cluster2 <- factor(temp.TCGA$ELN.cluster, labels = c("Good", "Poor", "InterOther", "InterPromyelocytes"))
+
+temp.TCGA$ELN.Pro <- ifelse(temp.TCGA$ELN.cluster2 == "Good" & temp.TCGA$cluster.refined == "Promyelocytes / GMPs", "FavorablePromyelocytes", NA)
+temp.TCGA$ELN.Pro <- ifelse(temp.TCGA$ELN.cluster2 == "InterPromyelocytes", "InterPromyelocytes", temp.TCGA$ELN.Pro)
+
+
+# remove ELN classes with NAs 
+idx <- !is.na(temp.TCGA$ELN.Pro)
+
+res.TCGA <- cinaR(count.TCGA[,c(TRUE,idx)], contrasts = temp.TCGA$ELN.Pro[idx], experiment.type = "RNA-Seq", comparison.scheme = "OVO",
+                  DA.fdr.threshold = 1, DA.lfc.threshold = 0)
+
+# pca_plot(res.TCGA, overlaid.info = temp.TCGA$ELN.cluster2[idx], show.names = F)
+# pca_plot(res.TCGA, overlaid.info = temp.TCGA$primary_diagnosis[idx], show.names = F)
+
+
+df.TCGA <- res.TCGA$DA.results$DA.peaks$FavorablePromyelocytes_InterPromyelocytes
+df.TCGA <- ens2gene(df.TCGA, genemap)
+
+# res.TCGA$DA.results$DA.peaks$InterOther_InterPromyelocytes
+volcano.TCGA <- df.TCGA %>% ggplot(aes(logFC, -log10(FDR), label = ifelse(FDR < 0.05 & abs(logFC) > 2, gene_symbol, ""), 
+                                       color = -log10(FDR))) + geom_point() + geom_text_repel(force = 1.2) + theme.gg +
+    xlab("Promyelocytes/GMPs (ELN − Intermediate) vs All (ELN - Good)") +
+    labs(title = "TCGA")
+cairo_pdf("output/TCGA_DA_Volcano.pdf" , width = 8, height = 6)
+volcano.TCGA
+dev.off()
+```
+
+```{r BEAT DA}
+count.BEAT <- read.csv("data/Studies_Latest/BEAT-AML/BEAT_AML_ht_seq.csv")
+
+# take the patients
+count.BEAT <- count.BEAT[,c("X", temp.BEAT$ID)]
+
+
+temp.BEAT$ELN.cluster2 <- factor(temp.BEAT$ELN.cluster, labels = c("Good", "Poor", "InterOther", "InterPromyelocytes"))
+
+
+temp.BEAT$ELN.Pro <- ifelse(temp.BEAT$ELN.cluster2 == "Good" & temp.BEAT$cluster.refined == "Promyelocytes / GMPs", "FavorablePromyelocytes", NA)
+temp.BEAT$ELN.Pro <- ifelse(temp.BEAT$ELN.cluster2 == "InterPromyelocytes", "InterPromyelocytes", temp.BEAT$ELN.Pro)
+
+
+# remove ELN classes with NAs 
+idx <- !is.na(temp.BEAT$ELN.Pro)
+
+res.BEAT <- cinaR(count.BEAT[,c(TRUE,idx)], contrasts = temp.BEAT$ELN.Pro[idx], experiment.type = "RNA-Seq", comparison.scheme = "OVO",
+                  DA.fdr.threshold = 1, DA.lfc.threshold = 0)
+
+
+df.BEAT <- res.BEAT$DA.results$DA.peaks$FavorablePromyelocytes_InterPromyelocytes 
+df.BEAT <- ens2gene(df.BEAT, genemap)
+
+volcano.BEAT <- df.BEAT %>% ggplot(aes(logFC, -log10(FDR), label = ifelse(FDR < 0.05 & abs(logFC) > 2, gene_symbol, ""), 
+                                       color = -log10(FDR))) + geom_point() + geom_text_repel(force = 1.2) + theme.gg +
+    xlab("Promyelocytes/GMPs (ELN − Intermediate) vs All (ELN - Good)") +
+    labs(title = "BEAT")
+
+cairo_pdf("output/BEAT_DA_Volcano.pdf" , width = 8, height = 6)
+volcano.BEAT
+dev.off()
+
+```
+
+```{r TARGET DA}
+
+count.TARGET <- read.csv("data/Studies_Latest/TARGET/TARGET_ht_seq.csv")
+
+temp.TARGET$ELN.cluster2 <- factor(temp.TARGET$ELN.cluster, labels = c("Good", "Poor", "InterOther", "InterPromyelocytes"))
+
+
+temp.TARGET$ELN.Pro <- ifelse(temp.TARGET$ELN.cluster2 == "Good" & 
+                                  temp.TARGET$cluster.refined == "Promyelocytes / GMPs", "FavorablePromyelocytes", NA)
+temp.TARGET$ELN.Pro <- ifelse(temp.TARGET$ELN.cluster2 == "InterPromyelocytes", "InterPromyelocytes", temp.BEAT$ELN.Pro)
+
+
+# remove ELN classes with NAs 
+idx <- !is.na(temp.TARGET$ELN.Pro)
+
+res.TARGET <- cinaR(count.TARGET[,c(TRUE,idx)], contrasts = temp.TARGET$ELN.Pro[idx], experiment.type = "RNA-Seq", comparison.scheme = "OVO", DA.fdr.threshold = 1, DA.lfc.threshold = 0)
+
+
+df.TARGET <- res.TARGET$DA.results$DA.peaks$InterPromyelocytes_FavorablePromyelocytes 
+df.TARGET <- ens2gene(df.TARGET, genemap)
+
+volcano.TARGET <- df.TARGET %>% ggplot(aes(logFC, -log10(FDR), label = ifelse(FDR < 0.05 & abs(logFC) > 2, gene_symbol, ""), 
+                                       color = -log10(FDR))) + geom_point() + geom_text_repel(force = 1.2) + theme.gg +
+    xlab("Promyelocytes/GMPs (ELN − Intermediate) vs All (ELN - Good)") +
+    labs(title = "TARGET")
+
+cairo_pdf("output/TARGET_DA_Volcano.pdf" , width = 8, height = 6)
+volcano.TARGET
+dev.off()
+
+```
+```{r upset plot DE genes}
+df.DA <- rbind(
+    cbind(df.TCGA, Study = "TCGA"),
+    cbind(df.TARGET, Study = "TARGET"),
+    cbind(df.BEAT, Study = "BEAT")
+)
+
+# selecting DEGs
+df.DA <- df.DA[(df.DA$FDR < 0.05),]
+
+df.DA$Regulation <- ifelse(df.DA$logFC > 0, "Up", "Down")
+
+
+library(ggupset)
+library(tidyverse, warn.conflicts = FALSE)
+
+
+df.DA.up <- df.DA[df.DA$Regulation == "Up",]
+pdf("output/Upset_plot_Up_DE_genes_FDR_05.pdf", width = 6, height = 6)
+df.DA.up %>% 
+    filter(!is.na(gene_name)) %>% 
+    group_by(gene_name) %>%
+    summarize(Study = list(Study)) %>% 
+    ggplot(aes(x = Study)) +
+    geom_bar(width = 0.6) +
+    scale_x_upset() + 
+    geom_text(stat='count', aes(label=after_stat(count)), vjust=-1, size = 3) + 
+    theme.gg + labs(title = "Up regulated DEGs distribution", caption = "FDR < 0.05") + ylab("Number of DEGs")
+dev.off()
+
+
+df.DA.dw <- df.DA[df.DA$Regulation == "Down",]
+pdf("output/Upset_plot_Down_DE_genes_FDR_05.pdf", width = 6, height = 6)
+df.DA.dw %>% 
+    filter(!is.na(gene_name)) %>% 
+    group_by(gene_name) %>%
+    summarize(Study = list(Study)) %>% 
+    ggplot(aes(x = Study)) +
+    geom_bar(width = 0.6) +
+    scale_x_upset() + 
+    geom_text(stat='count', aes(label=after_stat(count)), vjust=-1, size = 3) + 
+    theme.gg + labs(title = "Down regulated DEGs distribution", caption = "FDR < 0.05") + ylab("Number of DEGs")
+dev.off()
+
+
+df.DA.dw.common <- df.DA.dw %>% 
+    filter(!is.na(gene_name)) %>% 
+    group_by(gene_name, gene_symbol) %>%
+    summarize(Count = n()) %>% 
+    filter(Count == 3)
+    
+
+df.DA.up.common <- df.DA.up %>% 
+    filter(!is.na(gene_name)) %>% 
+    group_by(gene_name, gene_symbol) %>%
+    summarize(Count = n()) %>% 
+    filter(Count == 3)
+
+library(kableExtra)
+
+
+# df.DA.up.common %>% kbl %>% 
+#     kable_classic(full_width = F, html_font = "Cambria") %>% 
+#     save_kable(file = "output/Table_plot_Up_common_DE_genes_FDR_05.pdf")
+# 
+# 
+# df.DA.dw.common %>% kbl %>% 
+#     kable_classic(full_width = F, html_font = "Cambria") %>% 
+#     save_kable(file = "output/Table_plot_Down_common_DE_genes_FDR_05.pdf")
+
+er.dw <- cinaR::HPEA(df.DA.dw.common$gene_symbol, geneset = cinaRgenesets::wiki, background.genes.size = 20e3)
+er.up <- cinaR::HPEA(df.DA.up.common$gene_symbol, geneset = cinaRgenesets::wiki, background.genes.size = 20e3)
+```
+
+
+
+```{r enrichment analyses}
+library(purrr)
+# find the common genes across studies
+commonGenes <- function(x) Reduce(intersect, x)
+
+# order data frame according to found common genes
+orderDfs <- function(x) {x[match(commonGenes(map(df.list, "gene_symbol")), x[,"gene_symbol"]),]}
+
+df.list <- list(TCGA = df.TCGA, TARGET = df.TARGET, BEAT = df.BEAT)
+
+df.list <- map(df.list, orderDfs)
+```
+
+
+## APL comparisons in TCGA and BEAT
+```{r TCGA DA}
+count.TCGA <- read.csv("data/Studies_Latest/TCGA/TCGA_ht_seq.csv")
+
+temp.TCGA$ELN.cluster2 <- factor(temp.TCGA$ELN.cluster, labels = c("Good", "Poor", "InterOther", "InterPromyelocytes"))
+
+temp.TCGA$ELN.Pro2 <- ifelse(temp.TCGA$primary_diagnosis == "Acute promyelocytic leukaemia, PML-RAR-alpha", "APL", NA)
+temp.TCGA$ELN.Pro2 <- ifelse(temp.TCGA$ELN.cluster2 == "InterPromyelocytes", "InterPromyelocytes", temp.TCGA$ELN.Pro2)
+
+
+# remove ELN classes with NAs 
+idx.TCGA <- !is.na(temp.TCGA$ELN.Pro2)
+
+res.TCGA <- cinaR(count.TCGA[,c(TRUE,idx.TCGA)], contrasts = temp.TCGA$ELN.Pro2[idx.TCGA], experiment.type = "RNA-Seq", comparison.scheme = "OVO",
+                  DA.fdr.threshold = 1, DA.lfc.threshold = 0)
+
+# pca_plot(res.TCGA, overlaid.info = temp.TCGA$ELN.cluster2[idx], show.names = F)
+# pca_plot(res.TCGA, overlaid.info = temp.TCGA$primary_diagnosis[idx], show.names = F)
+
+
+df.TCGA <- res.TCGA$DA.results$DA.peaks$APL_InterPromyelocytes
+df.TCGA <- ens2gene(df.TCGA, genemap)
+
+# res.TCGA$DA.results$DA.peaks$InterOther_InterPromyelocytes
+volcano.TCGA <- df.TCGA %>% ggplot(aes(logFC, -log10(FDR), label = ifelse(FDR < 0.05 & abs(logFC) > 2, gene_symbol, ""), 
+                                       color = -log10(FDR))) + geom_point() + geom_text_repel(force = 1.2) + theme.gg +
+    xlab("Promyelocytes/GMPs (ELN − Intermediate) vs APL") +
+    labs(title = "TCGA")
+cairo_pdf("output/TCGA_DA_Volcano_APL_vs_InterPro.pdf" , width = 8, height = 6)
+volcano.TCGA
+dev.off()
+```
+
+```{r BEAT DA}
+count.BEAT <- read.csv("data/Studies_Latest/BEAT-AML/BEAT_AML_ht_seq.csv")
+
+# take the patients
+count.BEAT <- count.BEAT[,c("X", temp.BEAT$ID)]
+
+
+temp.BEAT$ELN.cluster2 <- factor(temp.BEAT$ELN.cluster, labels = c("Good", "Poor", "InterOther", "InterPromyelocytes"))
+
+temp.BEAT$ELN.Pro2 <- ifelse(temp.BEAT$primary_diagnosis == "Acute promyelocytic leukaemia, PML-RAR-alpha", "APL", NA)
+temp.BEAT$ELN.Pro2 <- ifelse(temp.BEAT$ELN.cluster2 == "InterPromyelocytes", "InterPromyelocytes", temp.BEAT$ELN.Pro2)
+
+
+# remove ELN classes with NAs 
+idx.BEAT <- !is.na(temp.BEAT$ELN.Pro2)
+
+res.BEAT <- cinaR(count.BEAT[,c(TRUE,idx.BEAT)], contrasts = temp.BEAT$ELN.Pro2[idx.BEAT], experiment.type = "RNA-Seq", comparison.scheme = "OVO",
+                  DA.fdr.threshold = 1, DA.lfc.threshold = 0)
+
+
+df.BEAT <- res.BEAT$DA.results$DA.peaks$InterPromyelocytes_APL 
+df.BEAT$logFC <- -df.BEAT$logFC
+df.BEAT <- ens2gene(df.BEAT, genemap)
+
+volcano.BEAT <- df.BEAT %>% ggplot(aes(logFC, -log10(FDR), label = ifelse(FDR < 0.05 & abs(logFC) > 2, gene_symbol, ""), 
+                                       color = -log10(FDR))) + geom_point() + geom_text_repel(force = 1.2) + theme.gg +
+    xlab("Promyelocytes/GMPs (ELN − Intermediate) vs APL") +
+    labs(title = "BEAT")
+
+cairo_pdf("output/BEAT_DA_Volcano_APL_vs_InterPro.pdf" , width = 8, height = 6)
+volcano.BEAT
+dev.off()
+
+```
+```{r}
+df.DA <- rbind(
+    cbind(df.TCGA, Study = "TCGA"),
+    cbind(df.BEAT, Study = "BEAT")
+)
+
+# selecting DEGs
+df.DA <- df.DA[(df.DA$FDR < 0.05),]
+
+df.DA$Regulation <- ifelse(df.DA$logFC > 0, "Up", "Down")
+
+
+library(ggupset)
+library(tidyverse, warn.conflicts = FALSE)
+
+
+df.DA.up <- df.DA[df.DA$Regulation == "Up",]
+pdf("output/Upset_plot_APL_Up_DE_genes_FDR_05.pdf", width = 6, height = 6)
+df.DA.up %>% 
+    filter(!is.na(gene_name)) %>% 
+    group_by(gene_name) %>%
+    summarize(Study = list(Study)) %>% 
+    ggplot(aes(x = Study)) +
+    geom_bar(width = 0.6) +
+    scale_x_upset() + 
+    geom_text(stat='count', aes(label=after_stat(count)), vjust=-1, size = 3) + 
+    theme.gg + labs(title = "Up regulated DEGs distribution", caption = "FDR < 0.05") + ylab("Number of DEGs")
+dev.off()
+
+
+df.DA.dw <- df.DA[df.DA$Regulation == "Down",]
+pdf("output/Upset_plot_APL_Down_DE_genes_FDR_05.pdf", width = 6, height = 6)
+df.DA.dw %>% 
+    filter(!is.na(gene_name)) %>% 
+    group_by(gene_name) %>%
+    summarize(Study = list(Study)) %>% 
+    ggplot(aes(x = Study)) +
+    geom_bar(width = 0.6) +
+    scale_x_upset() + 
+    geom_text(stat='count', aes(label=after_stat(count)), vjust=-1, size = 3) + 
+    theme.gg + labs(title = "Down regulated DEGs distribution", caption = "FDR < 0.05") + ylab("Number of DEGs")
+dev.off()
+
+```
+```{r}
+df.DA.dw.common <- df.DA.dw %>% 
+    filter(!is.na(gene_name)) %>% 
+    group_by(gene_name, gene_symbol) %>%
+    summarize(Count = n()) %>% 
+    filter(Count == 2)
+    
+
+df.DA.up.common <- df.DA.up %>% 
+    filter(!is.na(gene_name)) %>% 
+    group_by(gene_name, gene_symbol) %>%
+    summarize(Count = n()) %>% 
+    filter(Count == 2)
+
+er.dw <- cinaR::HPEA(df.DA.dw.common$gene_symbol, geneset = cinaRgenesets::wiki, background.genes.size = 20e3)
+er.up <- cinaR::HPEA(df.DA.up.common$gene_symbol, geneset = cinaRgenesets::wiki, background.genes.size = 20e3)
+
+library(kableExtra)
+
+
+pathway.colnames <- c("Pathway Name", "P Value", "Overlapped Genes", "Overlapping Ratio", "Adj. P Value")
+colnames(er.up) <-pathway.colnames
+colnames(er.dw) <-pathway.colnames
+
+
+er.up[1:5,c(1,4,2,5)] %>% kbl(row.names = F, caption = "Up-regulated pathways (Top 5)") %>% 
+    kable_classic(full_width = F, html_font = "Cambria",  lightable_options = "striped")  %>% 
+    column_spec(1, width = "14cm")  %>% save_kable("output/Table_plot_APL_UP_pathways.html")
+
+er.dw[1:5,c(1,4,2,5)] %>% kbl(row.names = F, caption = "Down-regulated pathways (Top 5)") %>% 
+kable_classic(full_width = F, html_font = "Cambria",  lightable_options = "striped") %>% 
+    column_spec(1, width = "12cm") %>% save_kable("output/Table_plot_APL_Down_pathways.html")
+```
+
+
+```{r}
+cm.TCGA <- res.TCGA$DA.results$cp
+cm.BEAT <- res.BEAT$DA.results$cp
+
+
+up.genes <- paste(er.up$`Overlapped Genes`[1:5], collapse = ",") %>% strsplit(",", fixed = T) %>% unlist %>% unique()
+dw.genes <- paste(er.dw$`Overlapped Genes`[1:5], collapse = ",") %>% strsplit(",", fixed = T) %>% unlist %>% unique()
+
+
+makeRowsGeneSymbol <- function(cm){
+    
+    # ens to symbol map
+    ens2gene <- cinaR::grch38
+    m <- match(rownames(cm), ens2gene$ensgene)
+    mapped.genes <- ens2gene$symbol[m]
+    rownames(cm) <- mapped.genes
+    return(cm)
+}
+
+# run once!
+cm.TCGA <- makeRowsGeneSymbol(cm.TCGA)
+cm.BEAT <- makeRowsGeneSymbol(cm.BEAT)
+
+library(pheatmap)
+library(RColorBrewer)
+
+
+breaksList = seq(-3,3, by = .001)
+pheatmap.colors <- colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(length(breaksList))
+
+
+ann.colors <- list(ELN.Pro2 = c("APL" = "#2b9e49", "InterPromyelocytes" = "#5dc1e3"),
+                   Regulation = c("Up" = "#B2182B", "Down" = "#2166ACFF"))
+
+ann.col.TCGA <- temp.TCGA[idx.TCGA,"ELN.Pro2", drop = F]
+ann.row.TCGA <- data.frame(Regulation = c(rep("Up", length(up.genes)), rep("Down", length(dw.genes))))
+rownames(ann.row.TCGA) <- c(up.genes, dw.genes)
+rownames(ann.col.TCGA) <- colnames(cm.TCGA)
+
+pdf("output/TCGA_APL_ELNPro_Pheatmap.pdf", height = 8, width = 18)
+pheatmap(t(cm.TCGA[c(up.genes, dw.genes),]), scale = "column", border_color = NA, 
+         annotation_row = ann.col.TCGA, annotation_col = ann.row.TCGA, cluster_cols = F,
+         color = pheatmap.colors, breaks = breaksList, annotation_colors = ann.colors)
+dev.off()
+
+ann.col.BEAT <- temp.BEAT[idx.BEAT,"ELN.Pro2", drop = F]
+ann.row.BEAT <- data.frame(Regulation = c(rep("Up", length(up.genes)), rep("Down", length(dw.genes))))
+rownames(ann.row.BEAT) <- c(up.genes, dw.genes)
+rownames(ann.col.BEAT) <- colnames(cm.BEAT)
+
+pdf("output/BEAT_APL_ELNPro_Pheatmap.pdf", height = 8, width = 18)
+pheatmap(t(cm.BEAT[c(up.genes, dw.genes),]), scale = "column", border_color = NA, 
+         annotation_row = ann.col.BEAT, annotation_col = ann.row.BEAT, cluster_cols = F,
+         color = pheatmap.colors, breaks = breaksList, annotation_colors = ann.colors)
+dev.off()
+
+```
+
