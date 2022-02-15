@@ -1,0 +1,86 @@
+---
+title: "Power Calculations"
+output: html_notebook
+---
+
+
+```{r}
+# Refer here: https://satijalab.org/howmanycells/
+# Example (probability of seeing at least 10 cells from 5 cell types)
+
+# number of total cells (upper limit of sequenced cells)
+k <- 10000
+
+# smallest number of cells you want to observe
+n <- 10
+
+# fraction of rarest cell type
+f <- 0.01
+
+# number of cell types
+m <- 5
+
+
+# p covering number of cells
+cellCount <- seq(n, k, by = 1)
+probs <- pnbinom(cellCount-n, size = n, prob = f)^m
+plot(probs)
+
+probCells <- function(k, n, f, m){
+    # p covering number of cells
+    cellCount <- seq(n, k, by = 1)
+    probs <- pnbinom(cellCount-n, size = n, prob = f)^m
+    i.95 <- which.min(replace(probs, probs <= 0.95, NA))
+    i.99 <- which.min(replace(probs, probs <= 0.99, NA))
+    
+    return(as.data.frame(cbind("Rarest cell type (more than 1%)" = names(f), 
+             "Rarest cell type percentage" = as.numeric(f),
+             "Number of cell types" = m,
+             "Min cells expected per cell type" = n,
+             "p95" = cellCount[i.95], 
+             "p99" = cellCount[i.99]), 
+             stringsAsFactors = F))
+}
+
+# number of cells needed for 0.95 and 0.99
+probCells(k, n, f, m)
+```
+
+```{r Real data}
+load("cache/deconvolution_LUMC.RDS")
+
+
+pdf("output/LUMC_deconvolutions_music_barplot.pdf", width = 16, height = 8)
+deconv.LUMC %>% melt() %>% ggplot(aes(Var1, value, fill = Var2)) + geom_bar(stat= "identity") + scale_fill_manual(values = cell.type.colors[1:20]) + theme.gg + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + xlab("") + ylab("") + ggtitle("LUMC") + labs(fill = "Cell Type")
+dev.off()
+```
+
+
+```{r Real data}
+rarest.percentage <- 0.01
+
+cellCounts <- apply(deconv.LUMC, 1, function(x){
+    
+    m <- sum(x >= rarest.percentage)
+    
+    cell.types <- paste0(names(x[x >= rarest.percentage]), collapse = ", ")
+    
+    # find rarest cell type that has more than 1%
+    i.min <- which.min(replace(x, x <= rarest.percentage, NA))
+    f <- x[i.min]
+    
+    return(cbind(probCells(1e4, 50, f, m ), cell.types))
+}) 
+
+cellCounts.df <- cellCounts %>% do.call(rbind, . ) %>% as.data.frame
+
+cellCounts.df <- cbind(Assigment = clusters.LUMC, cellCounts.df)
+
+write.csv(cellCounts.df, file = "../../Desktop/LUMC_Deconvolution.csv")
+
+load("cache/DA_required_files.RDS")
+a <- readxl::read_excel("Samples_metabolomics_proteomics.xlsx")
+```
+
+
+

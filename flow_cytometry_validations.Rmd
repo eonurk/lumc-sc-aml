@@ -1,0 +1,144 @@
+---
+title: "LUMC Flow Cytometry Validations"
+author: "E Onur Karakaslar"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LUMC/")
+```
+
+```{r import libraries and utils, include=TRUE, message=FALSE, warning=FALSE}
+library(MuSiC) # deconvolution methodq
+library(xbioc) # required for MusiC to run
+library(dplyr) # %>%
+library(ggcyto)
+library(ggpubr)
+library(ggplot2) # nice plots
+library(pheatmap) # pheatmaps
+library(paletteer) # nice colors
+library(RColorBrewer) # beatiful colors
+library(survminer) # survival analyses (KM-plots)
+library(survival) # survival analyses (surv function)
+
+# save figs 
+saveFigs = FALSE
+
+# load some utility functions
+source("utils/wrangleMat.R") 
+load("cache/cell_type_colors.RDS")
+# ggplot theme
+theme.gg <- theme_bw(base_size = 10) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+```{r}
+frames <- lapply(list.files("~/Desktop/0133755/0 20400197803 0133755 MOL VBE BBM 4/",full.names = T), read.FCS)
+fs <- as(frames, "flowSet")
+
+phenoData(fs)$name <- strsplit(unlist(fsApply(fs,keyword, "$FIL")), split = " ", fixed = T) %>% sapply(function(x){x[length(x)]})
+pData(phenoData(fs))
+
+spillover(fs[[1]])
+fsApply(fs, each_col, median)
+```
+
+```{r}
+autoplot(fs, "FSC-A", "FSC-H", bins = 128) + theme.gg
+    ```
+
+```{r}
+comp <- fsApply(fs, function(x) spillover(x)[[1]], simplify=FALSE)
+fs_comp <- compensate(fs, comp)
+
+autoplot(fs_comp, "FSC-A", "FSC-H", bins = 128) + theme.gg
+```
+
+
+```{r gating trials}
+# estimate a lymphGate
+lg <- fsApply(fs_comp, flowStats::gate_singlet)
+
+autoplot(fs_comp, "FSC-A", "FSC-H", bins = 128) + geom_gate(lg) + geom_stats() + theme.gg
+```
+```{r}
+alot <- fs_comp[[1]]
+```
+
+```{r tube 1/neutrophil differentiation}
+# Euroflow paper Figure 19A
+
+binSize = 32
+
+# tube 1
+t1 <- fs_comp[[2]]
+
+t1.cd45.cd10 <- autoplot(t1, "CD45", "CD10", bins = binSize) + theme.gg + scale_x_log10() + scale_y_log10()
+
+t1.cd34.cd117 <- autoplot(t1, "CD34", "CD117", bins = binSize) + theme.gg + scale_x_log10() + scale_y_log10()
+
+t1.hladr.cd11b <- autoplot(t1, "HLADR", "CD11b", bins = binSize) + theme.gg + scale_x_log10() + scale_y_log10()
+
+t1.cd16.cd13 <- autoplot(t1, "CD16", "CD13", bins = binSize) + theme.gg + scale_x_log10() + scale_y_log10()
+
+
+p1 <- ggarrange(as.ggplot(t1.cd45.cd10), as.ggplot(t1.cd34.cd117), as.ggplot(t1.hladr.cd11b), as.ggplot(t1.cd16.cd13), 
+                nrow = 1, common.legend = T)
+
+pdf("output/Euroflow_Tube1_Example.pdf", height = 3.2, width = 12)
+print(p1, newpage = F)
+dev.off()
+
+```
+```{r}
+
+# Euroflow paper Figure 19B
+
+binSize = 32
+
+# tube 2
+t2 <- fs_comp[[3]]
+
+t2.cd45.cd35 <- autoplot(t2, "CD45", "CD35", bins = binSize) + theme.gg + scale_x_log10() + scale_y_log10()
+
+t2.cd34.cd117 <- autoplot(t2, "CD34", "CD117", bins = binSize) + theme.gg + scale_x_log10() + scale_y_log10()
+
+t2.hladr.cd64 <- autoplot(t2, "HLADR", "CD64", bins = binSize) + theme.gg + scale_x_log10() + scale_y_log10()
+
+t2.irem2.cd14 <- autoplot(t2, "IREM2", "CD14", bins = binSize) + theme.gg + scale_x_log10() + scale_y_log10()
+
+
+p2 <- ggarrange(as.ggplot(t2.cd45.cd35), as.ggplot(t2.cd34.cd117), as.ggplot(t2.hladr.cd64), as.ggplot(t2.irem2.cd14), 
+                nrow = 1, common.legend = T)
+
+pdf("output/Euroflow_Tube2_Example.pdf", height = 3.2, width = 12)
+print(p2, newpage = F)
+dev.off()
+
+```
+```{r}
+
+
+# tube 3
+t3 <- fs_comp[[4]]
+
+t3.cd45.cd71 <- autoplot(t3, "CD45", "CD71", bins = binSize) + theme.gg + scale_x_log10() + scale_y_log10()
+
+t3.cd34.cd117 <- autoplot(t3, "CD34", "CD117", bins = binSize) + theme.gg + scale_x_log10() + scale_y_log10()
+
+t3.hladr.cd33 <- autoplot(t3, "HLADR", "CD33", bins = binSize) + theme.gg + scale_x_log10() + scale_y_log10()
+
+t3.cd36.cd105 <- autoplot(t3, "CD36", "CD105", bins = binSize) + theme.gg + scale_x_log10() + scale_y_log10()
+
+
+p3 <- ggarrange(as.ggplot(t3.cd45.cd71), as.ggplot(t3.cd34.cd117), as.ggplot(t3.hladr.cd33), as.ggplot(t3.cd36.cd105), 
+                nrow = 1, common.legend = T)
+
+pdf("output/Euroflow_Tube3_Example.pdf", height = 3.2, width = 12)
+print(p3, newpage = F)
+dev.off()
+
+```
+

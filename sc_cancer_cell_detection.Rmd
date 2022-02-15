@@ -11,13 +11,14 @@ knitr::opts_knit$set(root.dir = "~/Desktop/LUMC/")
 ```
 
 ```{r import libraries and utils, include=TRUE, message=FALSE, warning=FALSE}
-library(MuSiC) # deconvolution methodq
+library(MuSiC) # deconvolution method
 library(xbioc) # required for MusiC to run
 library(dplyr) # %>%
 library(ggplot2) # nice plots
 library(pheatmap) # pheatmaps
 library(paletteer) # nice colors
 library(RColorBrewer) # beatiful colors
+library(Seurat)
 library(survminer) # survival analyses (KM-plots)
 library(survival) # survival analyses (surv function)
 
@@ -45,33 +46,37 @@ c("Conventional dendritic cells (cDCs)",
   "Eosinophil / Basophil progenitors", "Early EMP")
 ```
 
-```{r}
+```{r integrating AML samples via concatenating to Van Galen}
 # Healthy map
 immune.combined <- readRDS("data/Integrated_TRI_VG_Seurat.RDS")
 
-cell.type.order <- 
-  immune.combined@meta.data%>% dplyr::count_("label") %>% arrange(-n) %>% pull(label) 
-
-## Seurat Integration with Van Galen AML samples
+cell.type.order <-
+  immune.combined@meta.data%>% dplyr::count_("label") %>% arrange(-n) %>% pull(label)
+# 
+# # Seurat Integration with Van Galen AML samples
 # featureList <- rownames(immune.combined@assays$integrated@data)
 # 
 # DefaultAssay(immune.combined) <- "RNA"
 # Idents(immune.combined) <- "label"
 # 
-# immune.combined <- subset(immune.combined, 
-#                           idents = selected.ct, 
+# immune.combined <- subset(immune.combined,
+#                           idents = selected.ct,
 #                           invert = F)
 # 
 # ifnb.list <- SplitObject(immune.combined, split.by = "study")
 # 
-# ifnb.list$AML_VanGalen <- readRDS("data/VanGalen_AML_SeuratObject.RDS")
-# 
+# ifnb.list$BM_Van_Galen <- merge(ifnb.list$BM_Van_Galen, 
+#                                 readRDS("data/VanGalen_AML_SeuratObject.RDS"), 
+#                                 add.cell.ids = c("VG-Healthy", "VG-AML"), project = "VG")
 # 
 # # normalize and identify variable features for each dataset independently
 # ifnb.list <- lapply(X = ifnb.list, FUN = function(x) {
 #     x <- NormalizeData(x[featureList,])
 #     x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
 # })
+# 
+# rm(immune.combined)
+# gc()
 # 
 # # select features that are repeatedly variable across datasets for integration
 # features <- SelectIntegrationFeatures(object.list = ifnb.list)
@@ -80,47 +85,144 @@ cell.type.order <-
 # 
 # integrated <- IntegrateData(anchorset = anchors)
 # 
-# saveRDS(object = integrated, file = "data/Healthy_and_VG-AML_SeuratObject.RDS")
+# saveRDS(object = integrated, file = "data/Healthy_and_VG-AML_SeuratObject2.RDS")
 ```
+
+
+```{r}
+
+vg.hbm <- readRDS("data/VanGalen_HealthyBM_SeuratObject.RDS")
+vg.aml <- readRDS("data/VanGalen_AML_SeuratObject.RDS")
+
+vg.all <- merge(vg.hbm, vg.aml, add.cell.ids = c("healthy", "aml"), project= "vg-all")
+
+vg.all <- NormalizeData(vg.all)
+vg.all <- FindVariableFeatures(vg.all)
+vg.all <- ScaleData(vg.all, verbose = FALSE)
+vg.all <- RunPCA(vg.all, npcs = 30, verbose = FALSE)
+vg.all <- RunUMAP(vg.all, reduction = "pca", dims = 1:30)
+
+vg.all$sample_type <- ifelse(grepl("BM", vg.all$Sample), "Healthy", "AML")
+vg.all$Healthy_CellType <- ifelse(vg.all$sample_type == "Healthy",vg.all$CellType, NA )
+vg.all$Healthy_CellType[vg.all$Healthy_CellType == ""] <- NA
+vg.all$After_treatment <- ifelse(!(vg.all$Day %in% "D0" | is.na(vg.all$Day)), "After Treatment", NA)
+
+vg.all <- vg.all[,vg.all$CellType != ""]
+
+
+pdf("output/VG_all_UMAPs.pdf")
+DimPlot(vg.all, group.by = "Healthy_CellType", label = F, order = T)
+DimPlot(vg.all, group.by = "CellType", label = F, shuffle = T, cols = DiscretePalette(22))
+DimPlot(vg.all, group.by = "sample_type", label = F, shuffle = T)
+DimPlot(vg.all, group.by = "Sample", label = F, shuffle = T)
+DimPlot(vg.all, group.by = "After_treatment", label = F, shuffle = T)
+features <-  c("LILRB4", "MYO1G", "IL10RA", "ARHGAP45","CD34", "PTPRC")
+
+FeaturePlot(vg.all, features, combine = T, pt.size = 0.1)
+plot_density(vg.all, features)
+VlnPlot(vg.all, c(features, "GAPDH", "HSP90", "ACTB", "HMBS", "PBGD") , group.by = "CellType", stack = T, sort = F, flip = TRUE) + 
+  theme(legend.position = "none")
+
+dev.off()
+```
+
 
 
 ```{r}
 library(randomForest)
 library(Seurat)
-integrated <- readRDS("data/Healthy_and_VG-AML_SeuratObject.RDS")
+integrated <- readRDS("data/Healthy_and_VG-AML_SeuratObject2.RDS")
 DefaultAssay(integrated)   <- "integrated"
 
 
+```
+
+
+```{r see on UMAP}
+# Run the standard workflow for visualization and clustering
+integrated <- ScaleData(integrated, verbose = FALSE)
+integrated <- RunPCA(integrated, npcs = 30, verbose = FALSE)
+integrated <- RunUMAP(integrated, reduction = "pca", dims = 1:30)
+
+integrated$AML.Patient <- ifelse(grepl("AML", integrated$Sample), "AML", "Healthy")
+
+
+DimPlot(integrated, group.by = "AML.Patient", shuffle = T)
+
+pdf("output/Integrated_Ref2_BM_and_VG_AML_UMAP_Cell_Types.pdf")
+DimPlot(integrated, label = T, repel = T, label.size = 3, shuffle = T, group.by = "label") + theme.gg & NoLegend()
+dev.off()
+
+pdf("output/Integrated_Ref2_BM_and_VG_AML_UMAP_AML_status.pdf")
+DimPlot(integrated, group.by = "AML.Patient", shuffle = T) + theme.gg + ggtitle("")
+dev.off()
+
+
+FeaturePlot(integrated, "JUN", pt.size = 0.1, order = T) + theme.gg
+
+
+rownames(integrated) %>% sort
+```
+
+
+```{r}
 all.data <- t(as.matrix(integrated@assays$integrated@data))
 all.meta <- integrated@meta.data
 
 aml.samples <- grepl("AML",all.meta$Sample)
 
 X.train <- all.data[!aml.samples,]
-
-
 y.train <- all.meta[!aml.samples,"label"]
-
-
-model1 <- randomForest(x = X.train, y = as.factor(y.train), 
-                      ntree = 100, 
-                      do.trace = F,
-                      sampsize = rep(20, length(unique(y.train))),
-                      replace = T)
 
 library(caret)
 
-cm.train <- confusionMatrix(predict(model), as.factor(y.train))
+# # 5-fold cv
+# cv <- createFolds(y.train, k = 5)
+# 
+# models <- lapply(cv, function(x){
+#   
+#   model1 <- randomForest(x = X.train[-x,], 
+#                          y = y.train[-x] %>% as.factor, 
+#                          ntree = 100, 
+#                          do.trace = F,
+#                          sampsize = rep(30, length(unique(y.train[-x]))),
+#                          replace = T)
+#   
+#   cm.train <- confusionMatrix(predict(model1, X.train[x,]),as.factor(y.train[x]))
+#   cm.train.table <- as.data.frame(cm.train$table)
+#   cm.train.table$Prediction <- factor(cm.train.table$Prediction, levels=rev(cell.type.order))
+#   cm.train.table$Reference <- factor(cm.train.table$Reference, levels=(cell.type.order))
+#   cm.train.table <- cm.train.table %>% group_by(Reference) %>% mutate(Perc =Freq/sum(Freq))
+#   
+#   
+#   message("OOB Error:\t", model1$err.rate[model1$ntree,"OOB"]*100, "\nTest Acc:\t", cm.train$overall["Accuracy"] * 100)
+#   return(list(model = model1, cm.table = cm.train.table))
+# })
+# 
+# # Mean 5-cv
+# Perc <- Reduce('+', lapply(models, function(x){x$cm.table$Perc}))/5
+# 
+# cm.train.table <- models$Fold1$cm.table
+# cm.train.table$Perc <- Perc
+
+
+model1 <- randomForest(x = X.train, 
+                       y = y.train %>% as.factor, 
+                       ntree = 100, 
+                       do.trace = T,
+                       sampsize = rep(30, length(unique(y.train))),
+                       replace = T)
+
+  
+cm.train <- confusionMatrix(predict(model1, X.train),as.factor(y.train))
 cm.train.table <- as.data.frame(cm.train$table)
-
-
 cm.train.table$Prediction <- factor(cm.train.table$Prediction, levels=rev(cell.type.order))
 cm.train.table$Reference <- factor(cm.train.table$Reference, levels=(cell.type.order))
-cm.train.table <- cm.train.table %>% group_by(Reference) %>% mutate(Perc = Freq/sum(Freq))
+cm.train.table <- cm.train.table %>% group_by(Reference) %>% mutate(Perc =Freq/sum(Freq))
 
 gg.train <- 
 ggplot(cm.train.table, aes(Reference,Prediction, fill= Perc)) +
-    geom_tile() +
+    geom_tile() + 
     scale_fill_gradient(low="white", high="#d60000") +
     labs(x = "Reference",y = "Prediction") + theme.gg + ggtitle("Train") + 
   # theme(legend.position = "none") +
@@ -134,6 +236,9 @@ dev.off()
 ```
 
 ```{r test Van Galen AML cell}
+
+# model1 <- models$Fold1$model
+
 # Select the AML patient cells and meta
 aml.data <- all.data[aml.samples, ]
 aml.meta <- all.meta[aml.samples, ]
@@ -143,7 +248,8 @@ aml.cells <- aml.data[aml.meta$MutTranscripts != "" & !is.na(aml.meta$MutTranscr
 
 aml.cell.classes <- paste0(predict(model1, as.matrix(aml.cells)), "-like")
 
-aml.cell.classes[aml.cell.classes %in% names(table(aml.cell.classes)[table(aml.cell.classes) < 20])] <- "Other-like"
+aml.cell.classes[aml.cell.classes %in% names(table(aml.cell.classes)[table(aml.cell.classes) < 40]) |
+                                          grepl("T cells-like", aml.cell.classes)] <- "Other-like"
 
 # Model2 with aml cells
 newX <- rbind(X.train, aml.cells)
@@ -152,7 +258,7 @@ newY <- c(y.train, aml.cell.classes)
 model2 <- randomForest(x = newX, y = as.factor(newY), 
                       ntree = 100, 
                       do.trace = F,
-                      sampsize = rep(20, length(unique(newY))),
+                      sampsize = rep(30, length(unique(newY))),
                       replace = T)
 
 
@@ -174,32 +280,145 @@ ggplot(cm.train.table, aes(Reference,Prediction, fill= Perc)) +
   # theme(legend.position = "none") +
   scale_x_discrete(guide = guide_axis(angle = 90)) + 
   guides(fill = guide_colourbar(barwidth = 0.5, barheight = 5, title = "Fraction", frame.colour = "black", frame.linewidth = 0.4))+
-  geom_hline(yintercept = 6.5, size = 0.2) + geom_vline(xintercept = 20.5, size = 0.2)
+  geom_hline(yintercept = length(cell.type.order.aml)+0.5, size = 0.2) + geom_vline(xintercept = 20.5, size = 0.2)
 
 pdf("output/Cell_Type_Pred_ConfusionMat_Healthy_and_AML_Training.pdf", width = 6, height = 5)
 print(gg.train)
 dev.off()
 ```
 
-```{r}
-aml.meta$RF_EOK_Pred <- predict(model2, aml.data) 
 
-color.aml <- paletteer_d("awtools::a_palette")[1:6]
+
+```{r}
+aml.meta$RF_CellType_Pred <- predict(model1, aml.data) 
+
+
+color.aml <- paletteer_d("awtools::a_palette")[1:length(cell.type.order.aml)]
 names(color.aml) <- cell.type.order.aml
 
 
 predicted.proportions <- aml.meta %>% group_by(orig.ident) %>% 
   add_count(name = "total.cell.per.sample") %>% 
-  group_by(orig.ident, RF_EOK_Pred, total.cell.per.sample, Sample) %>% 
+  group_by(orig.ident, RF_CellType_Pred, total.cell.per.sample, Sample) %>% 
   summarise(total.cell.per.ct = n()) %>% 
   mutate(Fraction = total.cell.per.ct/total.cell.per.sample)
 
-pdf("output/VanGalen_AML_samples_RF.pdf", width = 14, height = 6)
-ggplot(predicted.proportions, aes(orig.ident, Fraction, fill = RF_EOK_Pred)) + geom_bar(stat = "identity") + 
-    theme.gg + labs(fill = "Cell Types") + scale_fill_manual(values = c(cell.type.colors[1:20], color.aml)) + 
+predicted.proportions$Day <- strsplit(predicted.proportions$orig.ident, split = "-", fixed = T) %>% sapply(function(x){x[2]})
+predicted.proportions$Day <- factor(predicted.proportions$Day, 
+                               levels = c("D0", "D14", "D15", "D18", "D20", "D29", "D31", 
+                                          "D34", "D35", "D37", "D41", "D49", "D97", "D113", "D171"))
+
+pdf("output/VanGalen_AML_samples_RF1.pdf", width = 14, height = 6)
+ggplot(predicted.proportions, aes(Day, Fraction, fill = RF_CellType_Pred)) + geom_bar(stat = "identity") + 
+    theme.gg + labs(fill = "Cell Types") + scale_fill_manual(values = c(cell.type.colors[1:20])) + 
     theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + xlab("Patients/Days") + ylab("Cell Type Fraction") + 
     facet_grid(~ Sample, scales =  "free_x", space = "free_x") + 
-    theme(strip.background = element_blank(), strip.text = element_blank())
+    theme(strip.background = element_blank(), strip.text = element_text(angle = 90))
 dev.off()
 ```
 
+
+```{r}
+aml.meta$RF_CellType_Pred <- predict(model2, aml.data) 
+aml.meta$RF_Malignancy_Pred <- ifelse(grepl("-like",aml.meta$RF_CellType_Pred), "Malignant", "Healthy")
+
+
+color.aml <- paletteer_d("awtools::a_palette")[1:length(cell.type.order.aml)]
+names(color.aml) <- cell.type.order.aml
+
+
+predicted.proportions <- aml.meta %>% group_by(orig.ident) %>% 
+  add_count(name = "total.cell.per.sample") %>% 
+  group_by(orig.ident, RF_CellType_Pred, total.cell.per.sample, Sample) %>% 
+  summarise(total.cell.per.ct = n()) %>% 
+  mutate(Fraction = total.cell.per.ct/total.cell.per.sample)
+
+predicted.proportions$Day <- strsplit(predicted.proportions$orig.ident, split = "-", fixed = T) %>% sapply(function(x){x[2]})
+predicted.proportions$Day <- factor(predicted.proportions$Day, 
+                               levels = c("D0", "D14", "D15", "D18", "D20", "D29", "D31", 
+                                          "D34", "D35", "D37", "D41", "D49", "D97", "D113", "D171"))
+
+pdf("output/VanGalen_AML_samples_RF2.pdf", width = 14, height = 6)
+ggplot(predicted.proportions, aes(Day, Fraction, fill = RF_CellType_Pred)) + geom_bar(stat = "identity") + 
+    theme.gg + labs(fill = "Cell Types") + scale_fill_manual(values = c(cell.type.colors[1:20], color.aml)) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + xlab("Patients/Days") + ylab("Cell Type Fraction") + 
+    facet_grid(~ Sample, scales =  "free_x", space = "free_x") + 
+    theme(strip.background = element_blank(), strip.text = element_text(angle = 90))
+dev.off()
+```
+
+```{r}
+predicted.proportions2 <- aml.meta %>% group_by(orig.ident) %>% 
+  add_count(name = "total.cell.per.sample") %>% 
+  group_by(orig.ident, RF_Malignancy_Pred, total.cell.per.sample, Sample) %>% 
+  summarise(total.cell.per.ct = n()) %>% 
+  mutate(Fraction = total.cell.per.ct/total.cell.per.sample)
+
+predicted.proportions2$Day <- strsplit(predicted.proportions2$orig.ident, split = "-", fixed = T) %>% sapply(function(x){x[2]})
+predicted.proportions2$Day <- factor(predicted.proportions2$Day, 
+                               levels = c("D0", "D14", "D15", "D18", "D20", "D29", "D31", 
+                                          "D34", "D35", "D37", "D41", "D49", "D97", "D113", "D171"))
+
+pdf("output/VanGalen_AML_samples_RF_malignancy.pdf", width = 11, height = 6)
+ggplot(predicted.proportions2, aes(Day, Fraction, fill = RF_Malignancy_Pred)) + geom_bar(stat = "identity") + 
+    theme.gg + labs(fill = "Status") + scale_fill_manual(values = c("gray", "brown"))  +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + xlab("Patients/Days") + ylab("Cell Type Fraction") + 
+    facet_grid(~ Sample, scales =  "free_x", space = "free_x") + 
+    theme(strip.background = element_blank(), strip.text = element_text(angle = 90))
+dev.off()
+```
+```{r}
+VG.meta <- readxl::read_excel("data/VanGalen_AML_samples_meta.xlsx")
+VG.meta$orig.ident <- paste0(VG.meta$Sample, "-", VG.meta$`Days from diagnosis`)
+
+df.VG <- merge(predicted.proportions2, VG.meta, by = "orig.ident")
+
+pdf("output/VanGalen_AML_samples_RF_malignant_vs_Blast.pdf", width = 5, height = 5)
+ggplot(df.VG %>% filter(RF_Malignancy_Pred == "Malignant"), 
+       aes(as.numeric(Fraction)*100, as.numeric(`Blast count`)*100, 
+           color = ifelse(Day == "D0", "Pre-treatment", "Post-treatment"),
+           shape = Gender
+           )
+       ) + geom_abline(intercept =0 , slope = 1, size = 0.2) + 
+  geom_point(size = 2.5) + scale_color_manual(values = color.aml[c(2,5)]) + 
+  theme.gg + xlim(c(0,100)) + ylim(c(0,100)) + theme(aspect.ratio=1) + 
+  xlab("RF Malignant %") + ylab("Clinical Blast %") + labs(color = "Status", shape = "Sex")
+dev.off()
+```
+
+```{r}
+aberrations.to.check <- c("KRAS", "NRAS", "NOTCH2", "SF3A1", "DNMT3A", "NPM1", "TET2", "FLT3", "FLT3-ITD", "CEBPA", "JAK3", "TP53", "RUNX1", "SETD2", "BCOR", "WT1", "BCORL1", "IDH2", "ASXL1", "PHF6", "PTPN11", "PTPN11", "ZRSR2", "SMC3", "SH2B3",  "SF3B1") %>% sort
+
+pdf("output/VanGalen_AML_samples_RF_malignant_vs_Blast_overlaid_mutations.pdf", width = 5, height = 5)
+lapply(aberrations.to.check, function(x){
+  ggplot(df.VG %>% filter(RF_Malignancy_Pred == "Malignant"), 
+       aes(as.numeric(Fraction)*100, as.numeric(`Blast count`)*100,
+           color = ifelse(grepl(x, `RHP Mutations`), "Yes", "No"),
+           shape = ifelse(Day == "D0", "Pre-treatment", "Post-treatment"),
+           label = orig.ident
+           )
+       ) +
+  geom_point(size = 2.5) + scale_color_manual(values = color.aml[c(2,5)]) + 
+  theme.gg + xlim(c(0,100)) + ylim(c(0,100)) + theme(aspect.ratio=1) + 
+  xlab("RF Malignant %") + ylab("Clinical Blast %") + labs(color = "Status", shape = "Status", title = x)
+})
+dev.off()
+```
+
+
+```{r}
+a <- cbind(df.VG %>% filter(RF_Malignancy_Pred == "Malignant"), 
+      VanGalen = aml.meta %>% group_by(orig.ident) %>% 
+      add_count(name = "total.cell.per.sample") %>% 
+      group_by(orig.ident, PredictionRF2, total.cell.per.sample, Sample) %>% 
+      summarise(total.cell.per.ct = n()) %>% 
+      mutate(Fraction = total.cell.per.ct/total.cell.per.sample) %>% filter(PredictionRF2 == "malignant") %>% 
+        select(Fraction)) %>% data.frame()
+
+pdf("output/VanGalen_AML_samples_RF_malignant_vs_VanGalen_malignant.pdf", width = 5, height = 5)
+ggplot(a, aes(VanGalen.Fraction, Fraction, color=  ifelse(Day == "D0", "Pre-treatment", "Post-treatment"))) + geom_point() +
+    geom_point(size = 2) + scale_color_manual(values = color.aml[c(2,6)]) + 
+  theme.gg + xlim(c(0,1)) + ylim(c(0,1)) + theme(aspect.ratio=1) + labs(color = "Status") +
+  xlab("Van Galen Prediction %") + ylab("RF Malignant %")
+dev.off()
+```

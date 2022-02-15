@@ -68,16 +68,22 @@ names(cell.type.colors) <- (c(colnames(deconv.AML.VG)))#, "Mixed Profiles", "Oth
 
 
 ```{r}
-df.deconv.AML.VG <- deconv.AML.VG %>% melt()
+df.deconv.AML.VG <- deconv.AML.VG %>% melt
 
 df.deconv.AML.VG$Var1 <- gsub("RNA.", "", df.deconv.AML.VG$Var1)
 df.deconv.AML.VG$Sample <- strsplit(df.deconv.AML.VG$Var1, split = ".", fixed = T) %>% sapply(function(x){x[1]})
+df.deconv.AML.VG$Day <- strsplit(df.deconv.AML.VG$Var1, split = ".", fixed = T) %>% sapply(function(x){x[2]})
+df.deconv.AML.VG$Day <- factor(df.deconv.AML.VG$Day, 
+                               levels = c("D0", "D14", "D15", "D18", "D20", "D29", "D31", 
+                                          "D34", "D35", "D37", "D41", "D49", "D97", "D113", "D171"))
+
 pdf("output/VanGalen_AML_samples_music.pdf", width = 12, height = 6)
-ggplot(df.deconv.AML.VG, aes(Var1, value, fill = Var2)) + geom_bar(stat = "identity") + 
+ggplot(df.deconv.AML.VG, aes(Day, value, fill = Var2)) + geom_bar(stat = "identity") + 
     scale_fill_manual(values = cell.type.colors) + theme.gg + labs(fill = "Cell Types") + 
     theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + xlab("Patients/Days") + ylab("Cell Type Fraction") + 
+    scale_x_discrete(breaks = df.deconv.AML.VG$Day) + 
     facet_grid(~ Sample, scales =  "free_x", space = "free_x") + 
-    theme(strip.background = element_blank(), strip.text = element_blank())
+    theme(strip.background = element_blank(), strip.text = element_text(angle = ))
 dev.off()
 
 ```
@@ -171,5 +177,46 @@ ggplot(df.deconv.AML.Petti, aes(as.factor(Var1), value, fill = Var2)) + geom_bar
 dev.off()
 
 ```
+
+
+
+```{r Check the reference map}
+library(Seurat)
+
+immune.combined <- readRDS("data/Integrated_TRI_VG_Seurat.RDS")
+
+DefaultAssay(immune.combined) <- "integrated"
+Idents(immune.combined) <- "label"
+
+immune.combined <- subset(immune.combined, 
+                          idents = c("Doublet and Triplets"), 
+                          invert = T)
+```
+
+
+```{r Remove AML patients from UMAP / Seurat}
+# Run the standard workflow for visualization and clustering
+immune.combined <- ScaleData(immune.combined, verbose = FALSE)
+immune.combined <- RunPCA(immune.combined, npcs = 30, verbose = FALSE)
+immune.combined <- RunUMAP(immune.combined, reduction = "pca", dims = 1:30)
+```
+
+```{r}
+ctmarkers <- readxl::read_excel("data/CellTypeMarkers.xlsx")
+
+ctmarkers$Markers <- sapply(ctmarkers$Markers, function(x){strsplit(x, split = ",",fixed = T)})
+
+rownames(ctmarkers) <- ctmarkers$Label
+
+pdf("output/Ref_Cell_Type_Markers.pdf")
+lapply(ctmarkers$Label, function(x){
+  
+  if(any(ctmarkers[x,]$Markers[[1]] %in% rownames(immune.combined))){
+    FeaturePlot(immune.combined, features = ctmarkers[x,]$Markers[[1]], combine = T) + labs(caption = x)
+  }
+})
+dev.off()
+```
+
 
 

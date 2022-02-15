@@ -100,6 +100,9 @@ aml.data <- big.cm[,aml.loc]
 aml.meta <- big.meta[aml.loc,]
 ```
 
+
+
+
 Yeey, now fun starts! Let's create a Seurat object
 
 ```{r move into seurat}
@@ -536,6 +539,11 @@ Idents(immune.combined) <- "label"
 immune.combined <- subset(immune.combined, 
                           idents = c("Doublet and Triplets"), 
                           invert = T)
+
+predictions <- read.delim('../../Downloads/azimuth_pred.tsv', row.names = 1)
+immune.combined <- AddMetaData(
+	object = immune.combined,
+	metadata = predictions)
 ```
 
 
@@ -545,9 +553,16 @@ immune.combined <- ScaleData(immune.combined, verbose = FALSE)
 immune.combined <- RunPCA(immune.combined, npcs = 30, verbose = FALSE)
 immune.combined <- RunUMAP(immune.combined, reduction = "pca", dims = 1:30)
 
-pdf("output/UMAP_Integrated_cell_type_labeled.pdf", width = 8, height = 6)
-DimPlot(immune.combined, label = T, repel = T, label.size = 4, shuffle = T) + theme.gg & NoLegend()
+
+
+pdf("output/UMAP_Integrated_cell_type_labeled.pdf", width = 14, height = 6)
+DimPlot(immune.combined, repel = T, label.size = 4, shuffle = T, cols = DiscretePalette(29)) + theme.gg
 dev.off()
+
+pdf("output/UMAP_Integrated_cell_type_labeled_azimuth.pdf", width = 14, height = 6)
+DimPlot(immune.combined, group.by = "predicted.celltype.l2", repel = T, label = T,label.box = T, label.size = 2.5, shuffle = T, cols = DiscretePalette(40)) + theme.gg
+dev.off()
+
 
 pdf("output/UMAP_Integrated_sample_labeled.pdf", width = 8, height = 6)
 DimPlot(immune.combined, group.by = "Sample", shuffle = T) + theme.gg + ggtitle("")

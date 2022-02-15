@@ -130,7 +130,7 @@ idx <- !is.na(temp.TARGET$ELN.Pro)
 res.TARGET <- cinaR(count.TARGET[,c(TRUE,idx)], contrasts = temp.TARGET$ELN.Pro[idx], experiment.type = "RNA-Seq", comparison.scheme = "OVO", DA.fdr.threshold = 1, DA.lfc.threshold = 0)
 
 
-df.TARGET <- res.TARGET$DA.results$DA.peaks$InterPromyelocytes_FavorablePromyelocytes 
+df.TARGET <- res.TARGET$DA.results$DA.peaks$FavorablePromyelocytes_InterPromyelocytes 
 df.TARGET <- ens2gene(df.TARGET, genemap)
 
 volcano.TARGET <- df.TARGET %>% ggplot(aes(logFC, -log10(FDR), label = ifelse(FDR < 0.05 & abs(logFC) > 2, gene_symbol, ""), 
@@ -143,6 +143,9 @@ volcano.TARGET
 dev.off()
 
 ```
+
+
+
 ```{r upset plot DE genes}
 df.DA <- rbind(
     cbind(df.TCGA, Study = "TCGA"),
@@ -246,8 +249,7 @@ temp.TCGA$ELN.Pro2 <- ifelse(temp.TCGA$ELN.cluster2 == "InterPromyelocytes", "In
 # remove ELN classes with NAs 
 idx.TCGA <- !is.na(temp.TCGA$ELN.Pro2)
 
-res.TCGA <- cinaR(count.TCGA[,c(TRUE,idx.TCGA)], contrasts = temp.TCGA$ELN.Pro2[idx.TCGA], experiment.type = "RNA-Seq", comparison.scheme = "OVO",
-                  DA.fdr.threshold = 1, DA.lfc.threshold = 0)
+res.TCGA <- cinaR(count.TCGA[,c(TRUE,idx.TCGA)], contrasts = temp.TCGA$ELN.Pro2[idx.TCGA], experiment.type = "RNA-Seq", comparison.scheme = "OVO", DA.fdr.threshold = 1, DA.lfc.threshold = 0)
 
 # pca_plot(res.TCGA, overlaid.info = temp.TCGA$ELN.cluster2[idx], show.names = F)
 # pca_plot(res.TCGA, overlaid.info = temp.TCGA$primary_diagnosis[idx], show.names = F)
@@ -300,6 +302,7 @@ volcano.BEAT
 dev.off()
 
 ```
+
 ```{r}
 df.DA <- rbind(
     cbind(df.TCGA, Study = "TCGA"),
@@ -344,6 +347,7 @@ df.DA.dw %>%
 dev.off()
 
 ```
+
 ```{r}
 df.DA.dw.common <- df.DA.dw %>% 
     filter(!is.na(gene_name)) %>% 
@@ -433,6 +437,39 @@ pdf("output/BEAT_APL_ELNPro_Pheatmap.pdf", height = 8, width = 18)
 pheatmap(t(cm.BEAT[c(up.genes, dw.genes),]), scale = "column", border_color = NA, 
          annotation_row = ann.col.BEAT, annotation_col = ann.row.BEAT, cluster_cols = F,
          color = pheatmap.colors, breaks = breaksList, annotation_colors = ann.colors)
+dev.off()
+
+```
+```{r ATRA related genes}
+ATRA.genes <- read.csv("data/ATRA_effected_genes.csv", sep = ";")[,c(1,2)]
+
+count.BEAT <- read.csv("data/Studies_Latest/BEAT-AML/BEAT_AML_ht_seq.csv")
+count.BEAT <- wrangleMat(count.BEAT)
+
+
+# ens to symbol map
+ens2gene <- cinaR::grch38
+m <- match(rownames(count.BEAT), ens2gene$ensgene)
+mapped.genes <- ens2gene$symbol[m]
+
+# duplicated name/NA/mitochondrial genes
+removed.genes <- duplicated(mapped.genes) | is.na(mapped.genes) | grepl("^MT", mapped.genes)
+
+count.BEAT <- count.BEAT[!removed.genes,]
+rownames(count.BEAT) <- mapped.genes[!removed.genes]
+
+count.BEAT <- filterConsensus(count.BEAT)
+count.BEAT <- edgeR::cpm(count.BEAT)
+
+ann.col.BEAT <- temp.BEAT[,c("ELN.Pro", "cluster.refined"), drop = F]
+ann.row.BEAT <- ATRA.genes[,"Status", drop = F]
+rownames(ann.row.BEAT) <- ATRA.genes$Genes
+
+
+pdf("output/BEAT_ATRA_induced_genes_heatmap.pdf", width = 10, height = 10)
+pheatmap(count.BEAT[ATRA.genes[(ATRA.genes$Genes) %in% rownames(count.BEAT), "Genes"] , ], scale = "row", border_color = NA, 
+         cluster_row = F, annotation_row = ann.row.BEAT,  annotation_col =  ann.col.BEAT,
+         color = pheatmap.colors, breaks = breaksList, show_colnames = F)
 dev.off()
 
 ```

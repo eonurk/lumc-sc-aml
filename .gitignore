@@ -10,6 +10,15 @@
 
 /output
 
+Figures/
+Flow_cytometry/
+*.xlsx
+Supplementary Tables/
+*.nb.html
+sc_deconvolution_cache/
+sc_deconvolution_files/
+
 *.DS_Store
 .DS_Store
 .Rhistory
+.DS_Store
