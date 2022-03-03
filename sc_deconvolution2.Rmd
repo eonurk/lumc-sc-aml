@@ -15,6 +15,7 @@ library(MuSiC) # deconvolution method
 library(xbioc) # required for MusiC to run
 library(dplyr) # %>%
 library(scales)
+library(Seurat)
 library(ggpubr)
 library(ggplot2) # nice plots
 library(pheatmap) # pheatmaps
@@ -60,22 +61,6 @@ ref <- ref[, !ref$label.new %in% c("Macrophage", "Platelet", "Stromal")]
 ref <- ScaleData(ref, verbose = FALSE)
 ref <- RunPCA(ref, features = VariableFeatures(ref),verbose = FALSE, npcs = 30)
 ref <- RunUMAP(ref, dims = 1:30)
-
-  
-pdf("output/UMAP_Integrated_cell_type_labeled_azimuth.pdf", width = 8, height = 6)
-DimPlot(ref, repel = T, group.by = "predicted.celltype.l2",pt.size = 0.3,
-        label.size = 4, shuffle = T, cols = DiscretePalette(40)) + coord_fixed() + theme.gg + ggtitle("")
-dev.off()
-
-pdf("output/UMAP_Integrated_cell_type_labeled_azimuth_refined.pdf", width = 8, height = 6)
-DimPlot(ref, repel = T, group.by = "label.new", label.size = 4, shuffle = T,
-        cols = cell.type.colors[!names(cell.type.colors) %in% c("Mixed Profiles", "Others")]) + 
-  coord_fixed() + theme.gg + ggtitle("")
-dev.off()
-
-alot.tube.genes <- c("CD45", "CD34", "CD19", "MPO", "CD7", "CD3D", "CD79A")
-
-DotPlot(ref, group.by = "label.new", features = alot.tube.genes) + xlab("ALOT genes")
 ```
 
 
@@ -133,9 +118,10 @@ meta.TCGA <- meta.TCGA %>% mutate(Age = age_at_diagnosis/365,
                                   Origin = ifelse(grepl("Bone", sample_type), "BM", "PB"),
                                   `Primary Diagnosis` = primary_diagnosis, 
                                   ELN = RISK_MOLECULAR, 
-                                  Status = ifelse(temp.TCGA$event == "Alive", 0,1),
+                                  Status = ifelse(meta.TCGA$event == "Alive", 0,1),
                                   Patient = patient_ID,
                                   Sample = sample_ID,
+                                  Other.Sample = NA,
                                   Study = "TCGA") 
 meta.TCGA$ELN <- factor(meta.TCGA$ELN, labels = c("Favorable", "Intermediate", "Adverse"))
 
@@ -192,18 +178,37 @@ names(cell.type.colors) <- (c(colnames(deconv.TCGA), "Others"))
 ```
 
 
+```{r}
+  
+pdf("output/UMAP_Integrated_cell_type_labeled_azimuth.pdf", width = 8, height = 6)
+DimPlot(ref, repel = T, group.by = "predicted.celltype.l2",pt.size = 0.3,
+        label.size = 4, shuffle = T, cols = DiscretePalette(40)) + coord_fixed() + theme.gg + ggtitle("")
+dev.off()
+
+pdf("output/UMAP_Integrated_cell_type_labeled_azimuth_refined.pdf", width = 8, height = 6)
+DimPlot(ref, repel = T, group.by = "label.new", label.size = 4, shuffle = T,
+        cols = cell.type.colors[!names(cell.type.colors) %in% c("Mixed Profiles", "Others")]) + 
+  coord_fixed() + theme.gg + ggtitle("")
+dev.off()
+
+alot.tube.genes <- c("CD45", "CD34", "CD19", "MPO", "CD7", "CD3D", "CD79A")
+
+DotPlot(ref, group.by = "label.new", features = alot.tube.genes) + xlab("ALOT genes")
+```
+
+
+
 Now, we can have our heatmap:
 ```{r creating the immune composition heatmap, fig.width=15, fig.height=5}
 
 
 # TCGA patient annotations 
-ann.row.TCGA <- as.data.frame(cbind.data.frame(pdiagnoses.TCGA, 
+ann.row.TCGA <- cbind.data.frame(pdiagnoses.TCGA, 
                                     #Blast.BM = meta.TCGA[,"BM_blasts"],
                                     Blast = meta.TCGA[,"PB_blasts"], # All samples are from PB
                                     FAB = meta.TCGA[,"FAB"],
                                     ELN = meta.TCGA[,"RISK_MOLECULAR"],
-                                    Stemness = meta.TCGA[,"stemness"]),
-                              stringAsFactors = F)
+                                    Stemness = meta.TCGA[,"Stemness"])
 
 
 rownames(ann.row.TCGA) <- colnames(count.TCGA)
@@ -278,7 +283,7 @@ temp.TCGA <- cbind(meta.TCGA, cluster = clusters.TCGA)
 
 
 # simple clustering
-km.tcga.cluster <- survfit(Surv(overal_survival, status) ~ cluster, data=temp.TCGA)
+km.tcga.cluster <- survfit(Surv(overal_survival, Status) ~ cluster, data=temp.TCGA)
 
 
 plot.surv.all.TCGA <- 
@@ -321,7 +326,7 @@ if(saveFigs)
 temp.TCGA <- temp.TCGA %>%  dplyr::add_count(cluster)
 temp.TCGA$cluster.refined <- ifelse(temp.TCGA$n > 20, temp.TCGA$cluster, NA)
 
-km.tcga.cluster.refined <- survfit(Surv(overal_survival, status) ~ cluster.refined, data= temp.TCGA)
+km.tcga.cluster.refined <- survfit(Surv(overal_survival, Status) ~ cluster.refined, data= temp.TCGA)
 
 
 plot.surv.redefined.TCGA <- 
@@ -357,12 +362,12 @@ if(saveFigs)
 ```{r}
 # make GMP the reference
 temp.TCGA$cluster.refined <- factor(temp.TCGA$cluster.refined, levels = c("GMP", "CD14 Mono", "HSC"))
-TCGA.cox <- coxph(Surv(overal_survival, status) ~ cluster.refined, data = temp.TCGA)
+TCGA.cox <- coxph(Surv(overal_survival, Status) ~ cluster.refined, data = temp.TCGA)
 TCGA.cox
 ggforest(TCGA.cox)
 ```
 ```{r}
-TCGA.cox.ELN <- coxph(Surv(overal_survival, status) ~ ELN, data = temp.TCGA)
+TCGA.cox.ELN <- coxph(Surv(overal_survival, Status) ~ ELN, data = temp.TCGA)
 ggforest(TCGA.cox.ELN)
 ```
 
@@ -371,7 +376,7 @@ ggforest(TCGA.cox.ELN)
 ```{r}
 # ELN status as covariate
 temp.TCGA$Age <- ifelse(temp.TCGA$age_at_diagnosis/365 >= 55, ">=55", "<55")
-TCGA.cox2 <- coxph(Surv(overal_survival, status) ~  ELN + Age + cluster.refined, data = temp.TCGA)
+TCGA.cox2 <- coxph(Surv(overal_survival, Status) ~  ELN + Age + cluster.refined, data = temp.TCGA)
 TCGA.cox2
 ```
 
@@ -381,7 +386,7 @@ ggforest(TCGA.cox2)
 
 ```{r TCGA ELN CLASSES}
 # among cd14, hsc, and gmp patients
-km.tcga.eln <- survfit(Surv(overal_survival, status) ~ ELN, data=temp.TCGA)
+km.tcga.eln <- survfit(Surv(overal_survival, Status) ~ ELN, data=temp.TCGA)
 km.tcga.eln
 
 plot.ELN.TCGA <- 
@@ -423,7 +428,7 @@ rownames(temp.TCGA) <- temp.TCGA$sample_ID
 temp.TCGA$cluster.refined <- factor(temp.TCGA$cluster.refined, levels = c("GMP", "CD14 Mono", "HSC"))
 temp.TCGA <- as.data.frame(cbind(temp.TCGA, deconv.TCGA[,c("GMP", "CD14 Mono", "HSC")]))
 
-cox.tcga.deconv <- coxph(Surv(overal_survival, status) ~ GMP + `CD14 Mono` + HSC + ELN, data = temp.TCGA)
+cox.tcga.deconv <- coxph(Surv(overal_survival, Status) ~ GMP + `CD14 Mono` + HSC + ELN, data = temp.TCGA)
 cox.tcga.deconv
 X.train <- data.frame(deconv.TCGA[,c("GMP", "CD14 Mono", "HSC")], ELN = temp.TCGA$ELN, Age = temp.TCGA$Age, check.names = F)
 
@@ -434,7 +439,7 @@ qtiles <- quantile(preds, c(0, 0.33, 0.66, 1), na.rm = T)
 patient.groups.TCGA <- cut(preds, qtiles, labels = c("Low Risk", "Medium Risk", "High Risk"), include.lowest = T)
 temp.TCGA$patient.groups <- patient.groups.TCGA
 
-km.tcga.qtile <- survfit(Surv(overal_survival, status) ~ patient.groups, data = temp.TCGA)
+km.tcga.qtile <- survfit(Surv(overal_survival, Status) ~ patient.groups, data = temp.TCGA)
 km.tcga.qtile
 
 plot.tcga.ip.eln <- ggsurvplot(km.tcga.qtile,           
@@ -500,7 +505,7 @@ temp.TCGA$NPM1.cluster <- ifelse(temp.TCGA$primary_diagnosis == "Acute myeloid l
                                  ifelse(temp.TCGA$cluster == "GMP", 
                                         "NPM1 (GMP)", "NPM1 (Others)"), NA)
 
-km.tcga.npm1 <- survfit(Surv(overal_survival, status) ~ NPM1.cluster, data=temp.TCGA)
+km.tcga.npm1 <- survfit(Surv(overal_survival, Status) ~ NPM1.cluster, data=temp.TCGA)
 
 
 plot.promyelocytes.NPM1.TCGA <- 
@@ -539,7 +544,7 @@ temp.TCGA$NOS.cluster <- ifelse(temp.TCGA$primary_diagnosis == "Acute myeloid le
                                         "AML, NOS (GMP)", "AML, NOS (Others)"), NA)
 
 
-km.tcga.nos <- survfit(Surv(overal_survival, status) ~ NOS.cluster, data=temp.TCGA[!is.na(temp.TCGA$NOS.cluster), ])
+km.tcga.nos <- survfit(Surv(overal_survival, Status) ~ NOS.cluster, data=temp.TCGA[!is.na(temp.TCGA$NOS.cluster), ])
 
 
 plot.promyelocytes.NOS.TCGA <- 
@@ -578,13 +583,13 @@ if(saveFigs){
 We can also project the [stemness score](https://www.nature.com/articles/nature20598) of the patients per cluster. 
 ```{r}
 
-p1 <- ggplot(temp.TCGA, aes(cluster, stemness, fill = cluster)) + 
+p1 <- ggplot(temp.TCGA, aes(cluster, Stemness, fill = cluster)) + 
     geom_boxplot() + geom_jitter(width = 0.1) + 
   theme.gg + ylab("Stemness Score") + xlab("") + ggtitle("TCGA") + 
   scale_fill_manual(values = cell.type.colors[unique(temp.TCGA$cluster)])+ 
   labs(fill = "Clusters") + theme(axis.text.x=element_text(angle=45,hjust=1)) 
   
-p2 <- ggplot(temp.TCGA, aes(cluster.refined, stemness, fill = cluster.refined)) + 
+p2 <- ggplot(temp.TCGA, aes(cluster.refined, Stemness, fill = cluster.refined)) + 
     geom_boxplot() + geom_jitter(width = 0.1) + 
   theme.gg + ylab("Stemness Score") + xlab("") + ggtitle("TCGA") + 
   scale_fill_manual(values = cell.type.colors[unique(temp.TCGA$cluster.refined)])+ 
@@ -622,11 +627,11 @@ using the same pipeline.
 
 
 # count matrix
-count.LUMC <- read.csv("data/Other studies/LUMC/LUMC_counts_htseq.csv")
+count.LUMC <- read.csv("data/Studies_Latest/LUMC-AML/LUMC_counts_htseq.csv")
 
 count.LUMC <- wrangleMat(count.LUMC)
 
-meta.LUMC <- read.csv("data/Other studies/LUMC/meta_AML_LUMC.csv", row.names = 1)
+meta.LUMC <- read.csv("data/Studies_Latest/LUMC-AML/meta_AML_LUMC.csv", row.names = 1)
 
 # meta.LUMC.jeppe <- read.csv("~/Desktop/LUMC_Deconvolution_with_Jeppe_clusters.csv")
 # meta.LUMC <- cbind(meta.LUMC, meta.LUMC.jeppe[,c("jeppe_clusters", "available_for_scRNAseq")])
@@ -679,6 +684,7 @@ meta.LUMC <- meta.LUMC %>% mutate(Age = NA,
                                   Sex = ifelse(gender == "F", "female", "male"), 
                                   Recurrence = NA,
                                   Origin = sample.type,
+                                  Blast = blast_percentage,
                                   `Primary Diagnosis` = primary_diagnosis_refined, 
                                   ELN = NA, 
                                   FAB = NA,
@@ -686,6 +692,7 @@ meta.LUMC <- meta.LUMC %>% mutate(Age = NA,
                                   overal_survival = NA,
                                   Patient = subject_id,
                                   Sample = sample_title,
+                                  Other.Sample = NA,
                                   Study = "LUMC") 
 
 rownames(meta.LUMC) <- meta.LUMC$Sample
@@ -727,7 +734,7 @@ Now that, we have the deconvoluted fractions we can have the heatmap:
 ```{r heatmap LUMC, fig.width=15, fig.height=5, cache=TRUE}
 
 ann.row.LUMC <- as.data.frame(cbind(pdiagnoses.LUMC, 
-                                    Stemness = meta.LUMC[,"stemness"] ,
+                                    Stemness = meta.LUMC[,"Stemness"] ,
                                     Blast = meta.LUMC[,"blast_percentage"]
                                     ))
 
@@ -775,13 +782,13 @@ temp.LUMC <- cbind(meta.LUMC, cluster = clusters.LUMC)
 temp.LUMC <- temp.LUMC %>%  dplyr::add_count(cluster)
 temp.LUMC$cluster.refined <- ifelse(temp.LUMC$n > 10, temp.LUMC$cluster, "Others")
 
-p1 <- ggplot(temp.LUMC, aes(cluster, stemness, fill = cluster)) + 
+p1 <- ggplot(temp.LUMC, aes(cluster, Stemness, fill = cluster)) + 
     geom_boxplot() + geom_jitter(width = 0.1) + 
   theme.gg + ylab("Stemness Score") + xlab("") + ggtitle("LUMC") + 
   scale_fill_manual(values = cell.type.colors[unique(temp.LUMC$cluster)])+ 
   labs(fill = "Clusters") + theme(axis.text.x=element_text(angle=45,hjust=1)) 
   
-p2 <- ggplot(temp.LUMC, aes(cluster.refined, stemness, fill = cluster.refined)) + 
+p2 <- ggplot(temp.LUMC, aes(cluster.refined, Stemness, fill = cluster.refined)) + 
     geom_boxplot() + geom_jitter(width = 0.1) + 
   theme.gg + ylab("Stemness Score") + xlab("") + ggtitle("LUMC") + 
   scale_fill_manual(values = cell.type.colors[unique(temp.LUMC$cluster.refined)])+ 
@@ -790,6 +797,22 @@ p2 <- ggplot(temp.LUMC, aes(cluster.refined, stemness, fill = cluster.refined)) 
 
 print(p1)
 print(p2)
+
+temp.LUMC <- temp.LUMC %>% add_count(cluster) %>% mutate(cluster.refined = ifelse(n>3, cluster, "Others"))
+
+pdf("output/LUMC_Blast_vs_Cell_Types.pdf", width = 4, height = 4)
+ggplot(temp.LUMC, aes(cluster.refined, Blast, fill = cluster.refined)) + 
+  geom_boxplot() + geom_jitter(width = 0.1) + 
+  theme.gg + ylab("Reported Blast %") + xlab("") + ggtitle("LUMC") + 
+  scale_fill_manual(values = cell.type.colors)+ 
+  labs(fill = "") + theme(axis.text.x=element_text(angle=45,hjust=1), legend.position  = "none") 
+dev.off()
+
+summary(aov(Blast ~cluster.refined,data= temp.LUMC))
+
+
+pairwise.t.test(temp.LUMC$Blast, temp.LUMC$cluster.refined,
+                 p.adjust.method = "BH")
 ```
 
 ```{r include=FALSE}
@@ -878,6 +901,7 @@ meta.BEAT<- meta.BEAT[grepl("Acute myeloid leukemia", meta.BEAT$primary_diagnosi
 
 meta.BEAT <- meta.BEAT %>% mutate(Age = diagnoses.age_at_diagnosis/365, 
                                   Sex = demographic.gender, 
+                                  Blast = blasts,
                                   Recurrence = ifelse(prim_rec == "Recurrent", "Yes", "No"),
                                   Origin = ifelse(grepl("Bone", samples.sample_type), "BM", "PB"),
                                   `Primary Diagnosis` = primary_diagnosis_refined, 
@@ -885,6 +909,7 @@ meta.BEAT <- meta.BEAT %>% mutate(Age = diagnoses.age_at_diagnosis/365,
                                   ELN = ELN2017,
                                   Patient = meta.BEAT$case_id,
                                   Sample = rownames(.),
+                                  Other.Sample = LLS_SampleID,
                                   Study = "BEAT",
                                   Status = ifelse(event == "Dead", 1, 0)) 
 
@@ -934,7 +959,7 @@ deconv.BEAT <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'labe
 
 
 ```{r cache=TRUE, fig.width=16, fig.height=5.5}
-ann.row.BEAT <- as.data.frame(cbind.data.frame(pdiagnoses.BEAT, Blast = meta.BEAT$blasts, Stemness = meta.BEAT$stemness, FAB = meta.BEAT$FAB, ELN = meta.BEAT$ELN))
+ann.row.BEAT <- as.data.frame(cbind.data.frame(pdiagnoses.BEAT, Blast = meta.BEAT$Blast, Stemness = meta.BEAT$Stemness, FAB = meta.BEAT$FAB, ELN = meta.BEAT$ELN))
 
 rownames(ann.row.BEAT) <- colnames(count.BEAT)
 
@@ -1158,6 +1183,7 @@ meta.TARGET <- meta.TARGET %>% mutate(Age = Age.at.Diagnosis.in.Days/365,
                                   Sex = ifelse(Gender == "Male", "male", "female"), 
                                   Recurrence = ifelse(First.Event == "Relapse", "Yes", 
                                                       ifelse(First.Event == "Censored", "No", "Induction Failure")),
+                                  Blast = Bone.marrow.leukemic.blast.percentage....,
                                   Origin = "BM",
                                   FAB = FAB.Category,
                                   `Primary Diagnosis` = primary_diagnosis_refined, 
@@ -1165,6 +1191,7 @@ meta.TARGET <- meta.TARGET %>% mutate(Age = Age.at.Diagnosis.in.Days/365,
                                   ELN = Risk.group,
                                   Patient = TARGET.USI,
                                   Sample = sample,
+                                  Other.Sample = NA,
                                   Study = "TARGET", 
                                   Status = ifelse(Vital.Status == "Dead",1,0))
 
@@ -1205,7 +1232,7 @@ deconv.TARGET <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'la
 ann.row.TARGET <- as.data.frame(cbind.data.frame(pdiagnoses.TARGET, 
                                       Blast.BM = meta.TARGET$Bone.marrow.leukemic.blast.percentage...., 
                                       Blast.PB = meta.TARGET$Peripheral.blasts...., 
-                                      Stemness = meta.TARGET$stemness, 
+                                      Stemness = meta.TARGET$Stemness, 
                                       FAB = meta.TARGET$FAB,
                                       ELN = meta.TARGET$ELN))
 
@@ -1384,6 +1411,11 @@ count.LEUCE <- wrangleMat(count.LEUCE)
 
 
 meta.LEUCE <- read.csv("data/Other studies/LEUCEGENE/Leucegene_meta_data.csv", row.names = 1)
+meta.LEUCE <- read.csv("data/Other studies/LEUCEGENE/Leucegene_Annotations.tsv", sep = "\t")
+
+rownames(meta.LEUCE) <- meta.LEUCE$sample_id
+
+meta.LEUCE <- meta.LEUCE[colnames(count.LEUCE), ]
 
 # Not all genes exist in LEUCEGENE for APS and Stemness
 meta.LEUCE$APS <- NA
@@ -1396,6 +1428,7 @@ meta.LEUCE$primary_diagnosis <- meta.LEUCE$WHO.classification
 
 meta.LEUCE$primary_diagnosis <- ifelse(meta.LEUCE$primary_diagnosis %in% c("Acute myeloid leukemia, NOS",
                                                                    "\"\"Acute myeloid leukaemia, NOS\"\"",
+                                                                   "Acute myeloid leukaemia, NOS",
                                                                    "AML with maturation",
                                                                    "Acute myeloid leukemia with maturation",
                                                                    "AML without maturation",
@@ -1445,9 +1478,10 @@ meta.LEUCE[meta.LEUCE$primary_diagnosis %in%
              c("Therapy-related myeloid neoplasms"), "primary_diagnosis"] <-
     "Therapy related myeloid neoplasm"
 
-meta.LEUCE <- meta.LEUCE %>% mutate(Age = NA, 
-                                  Sex = NA, 
+meta.LEUCE <- meta.LEUCE %>% mutate(Age = Age.at.sampling, 
+                                  Sex = ifelse(Sex == "F", "female", "male"), 
                                   Recurrence = NA,
+                                  Blast = Blasts....,
                                   Origin = ifelse(Tissue == "Bone marrow", "BM", "PB"),
                                   `Primary Diagnosis` = primary_diagnosis, 
                                   ELN = NA, 
@@ -1455,6 +1489,7 @@ meta.LEUCE <- meta.LEUCE %>% mutate(Age = NA,
                                   overal_survival = NA,
                                   Patient = sample_id,
                                   Sample = sample_id,
+                                  Other.Sample = BioSample_ID,
                                   Study = "LEUCE") 
 
 
@@ -1525,47 +1560,18 @@ if(saveFigs){
 
 
 
-### CLUSTER vs T-cells
+
 ```{r}
 
-df.blasts <- read.csv("data/Studies_Latest/Blast_percentages_all.csv", sep = ";", row.names = 1)
-
-mt <- data.frame(meta.TARGET, cluster = clusters.TARGET)
-mt <- merge(mt, df.blasts, by.x = "Sample", by.y = "sample_ID", all.x = T)
-
-# one way anova 
-res.aov <- aov(blasts_measured ~ cluster, data=mt)
-summary(res.aov)
-
-# tukey's pairwise
-TukeyHSD(res.aov)
-
-
-ggplot(mt, aes(cluster, blasts_measured, fill = cluster)) + geom_point() + geom_boxplot() + coord_flip() + scale_fill_manual(values = cell.type.colors) + xlab("") + ylab("Reported Blast %")+theme.gg + 
-  geom_hline(yintercept = mean(mt$blasts_measured, na.rm = T))
-
-
-ggplot(mt, aes(cluster, Age, fill = cluster)) + geom_point() + geom_boxplot() + coord_flip() + scale_fill_manual(values = cell.type.colors) + xlab("") + ylab("Age")+theme.gg
-
-
-mb <- data.frame(meta.BEAT, cluster = clusters.BEAT)
-
-ggplot(mb, aes(cluster, blasts, fill = cluster)) + geom_point() + geom_boxplot() + coord_flip() + scale_fill_manual(values = cell.type.colors) + xlab("") + ylab("Reported Blast %")+theme.gg  +
-  geom_hline(yintercept = mean(mb$blasts, na.rm = T))
-
-
-ggplot(mb, aes(cluster, Age, fill = cluster)) + geom_point() + geom_boxplot() + coord_flip() + scale_fill_manual(values = cell.type.colors) + xlab("") + ylab("Age")+theme.gg
-```
 # EDUCATED GUESS: Deconvolution correlates with FAB therefore no survival differences
 # So, let's focus on mutation combinations that explains the cell types.
-```{r}
+library(data.table)
 mut.TCGA <- fread("data/Studies_Latest/TCGA/TCGA_mutations.txt")
 mut.TCGA <- mut.TCGA %>% mutate(Patient = Matched_Norm_Sample_Barcode)
 mut.TCGA <- reshape2::acast(mut.TCGA, Patient ~ Hugo_Symbol)
 meta.TCGA$Order <- 1:nrow(meta.TCGA)
 mut.TCGA <- merge(meta.TCGA[, c("Patient", "Sample", "Order"), drop = F], mut.TCGA, by.x = "Patient", by.y = 0,  all.x = T)
 mut.TCGA <- mut.TCGA[order(mut.TCGA$Order),]
-
 
 
 mut.BEAT <- fread("data/Studies_Latest/BEAT-AML/BEAT_mutations.txt")
@@ -1588,18 +1594,54 @@ mut.TARGET <- mut.TARGET[order(mut.TARGET$Order),]
 intersected.mutations <- Reduce(intersect, list(colnames(mut.TCGA), colnames(mut.BEAT), colnames(mut.TARGET)))
 # Remove Patient, Sample and Order
 intersected.mutations <- intersected.mutations[4:length(intersected.mutations)]
+
+
+# Mutations for LUMC
+mut.LUMC <- as.data.frame(fread("data/Studies_Latest/mutations_oh.csv", drop = 1))
+mut.LUMC <- mut.LUMC %>% filter(grepl("AML.",sample_ID))
+
+y <- lapply(intersected.mutations, function(x){
+  
+  if(x %in% colnames(mut.LUMC)){
+    return(ifelse(rowSums(mut.LUMC[,grep(x, colnames(mut.LUMC)), drop = F]) > 0, 1, 0))
+  }
+  return(rep(NA, nrow(mut.LUMC)))
+}) %>% do.call(cbind, .)
+
+rownames(y) <- mut.LUMC$sample_ID
+colnames(y) <- intersected.mutations
+mut.LUMC <- as.data.frame(y)
+
+# Mutations for LEUCE
+mut.LEUCE <- meta.LEUCE[,c("IDH1.R132.mutation", "NPM1.mutation", "FLT3.ITD.km.curated")]
+colnames(mut.LEUCE) <- c("IDH1", "NPM1", "FLT3")
+mut.LEUCE <- mut.LEUCE %>% filter(grepl("^X",sample_ID))
+
+
+y <- lapply(intersected.mutations, function(x){
+
+  if(x %in% colnames(mut.LEUCE)){
+    return(mut.LEUCE[,grep(x, colnames(mut.LEUCE)), drop = F])
+  }
+  return(rep(NA, nrow(mut.LEUCE)))
+}) %>% do.call(cbind, .)
+
+rownames(y) <- mut.LEUCE$sample_ID
+colnames(y) <- intersected.mutations
+mut.LEUCE <- as.data.frame(y)
+
 ```
 
 
 ### MERGE ALL STUDIES
 ```{r}
 # merge patient profiles from TCGA and BEAT
-common.features <- c("Sample", "Patient","Study","Age", "Sex","Origin","Primary Diagnosis", 
+common.features <- c("Sample", "Other.Sample", "Patient","Study","Age", "Blast", "Sex","Origin","Primary Diagnosis", 
                      "ELN", "FAB","Status", "overal_survival", "Stemness", "APS", "Recurrence")
 
 meta.train <- plyr::rbind.fill(
   cbind(meta.TCGA[,common.features],cluster = clusters.TCGA, mut.TCGA[, intersected.mutations]),
-  cbind(meta.LUMC[,common.features],cluster = clusters.LUMC),
+  cbind(meta.LUMC[,common.features],cluster = clusters.LUMC, mut.LUMC[, intersected.mutations]),
   cbind(meta.BEAT[,common.features],cluster = clusters.BEAT, mut.BEAT[, intersected.mutations]),
   cbind(meta.TARGET[,common.features],cluster = clusters.TARGET, mut.TARGET[, intersected.mutations]),
   cbind(meta.LEUCE[,common.features],cluster = clusters.LEUCE)
@@ -1670,6 +1712,7 @@ if(saveFigs){
 
 
 ```{r}
+library(gtsummary)
 summary.table.train <- meta.train %>% 
   filter(!duplicated(Patient)) %>% 
   dplyr::select(Age, Sex, Study, FAB,ELN, `Primary Diagnosis` ) %>% 
@@ -1688,48 +1731,58 @@ summary.table.train %>% as_gt() %>%
 ```
 
 
+
+### DECONVOLUTION ON REDUCED DIMENTIONS
 ```{r}
+
 noise <- matrix(runif(prod(dim(deconv.train)), min = -1e-6, max = 1e-6), nrow = nrow(deconv.train))
 new.vals <- deconv.train + noise
-
-
-
-umap <- umap::umap(deconv.train)
 tsne <- Rtsne::Rtsne(new.vals)
 
+set.seed(2)
 
-plot.df <- data.frame(UMAP = umap$layout, TSNE = tsne$Y, meta.train, check.names = F)
+umap <- umap::umap(deconv.train)
+
+
+plot.df <- data.frame(UMAP = umap$layout, TSNE = tsne$Y, deconv.train, meta.train, check.names = F)
 plot.df$`Primary Diagnosis` <- gsub("Acute myeloid leukemia", "", plot.df$`Primary Diagnosis`)
 
 pdf("output/UMAP_ALL_patients.pdf")
 
-plot.celltype <- ggplot(plot.df, aes(UMAP.1, UMAP.2, color = cluster)) +
+plot.celltype <- ggplot(plot.df[sample(1:nrow(plot.df)),], aes(UMAP.1, UMAP.2, color = cluster)) +
   geom_point(size = 2) +
   theme_light() + 
   coord_fixed(ratio = 1) + 
   scale_color_manual(values = cell.type.colors[!names(cell.type.colors) %in% c("Others")])
 plot.celltype
 
-plot.sex <- ggplot(plot.df, aes(UMAP.1, UMAP.2, color = Sex)) +
+plot.sex <- ggplot(plot.df[sample(1:nrow(plot.df)),], aes(UMAP.1, UMAP.2, color = Sex)) +
   geom_point(size = 2) +
   theme_light() + 
   coord_fixed(ratio = 1) + 
   scale_color_manual(values = ann.colors$Sex)
 plot.sex
 
-plot.stemness <- ggplot(plot.df, aes(UMAP.1, UMAP.2, color = Stemness)) +
+plot.stemness <- ggplot(plot.df[sample(1:nrow(plot.df)),], aes(UMAP.1, UMAP.2, color = Stemness)) +
   geom_point(size = 2) +
   theme_light() + 
   coord_fixed(ratio = 1) + 
   scale_color_viridis_c(na.value = NA)
 plot.stemness
 
-plot.APS <- ggplot(plot.df, aes(UMAP.1, UMAP.2, color = APS)) +
+plot.APS <- ggplot(plot.df[sample(1:nrow(plot.df)),], aes(UMAP.1, UMAP.2, color = APS)) +
   geom_point(size = 2) +
   theme_light() + 
   coord_fixed(ratio = 1) + 
   scale_color_viridis_c(option = "B", na.value = NA)
 plot.APS
+
+plot.Blast <- ggplot(plot.df[sample(1:nrow(plot.df)),], aes(UMAP.1, UMAP.2, color = Blast)) +
+  geom_point(size = 2) +
+  theme_light() + 
+  coord_fixed(ratio = 1) + 
+  scale_color_viridis_c(option = "D", na.value = NA)
+plot.Blast
 
 plot.study <- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2, color = Study)) +
   geom_point(size = 2) +
@@ -1743,33 +1796,133 @@ plot.age<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2, color 
   coord_fixed(ratio = 1) + scale_color_gradient(low = "lightblue", high = "darkblue")
 plot.age
 
-plot.fab<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2, color = FAB)) +
-  geom_point(size = 2) +
+plot.fab <- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2)) +
+  geom_point(size = 2, data = plot.df[is.na(plot.df$FAB),], color = "gray") + 
+  geom_point(size = 2, data = plot.df[!is.na(plot.df$FAB),], aes(color = FAB)) +
   theme_light() + 
-  coord_fixed(ratio = 1) + scale_color_manual(values = ann.colors$FAB)
+  coord_fixed(ratio = 1) + 
+  scale_color_manual(values = ann.colors$FAB)
 plot.fab
 
-plot.eln<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2, color = ELN)) +
-  geom_point(size = 2) +
+plot.eln<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2)) +
+  geom_point(size = 2, data = plot.df[is.na(plot.df$ELN),], color = "gray") + 
+  geom_point(size = 2, data = plot.df[!is.na(plot.df$ELN),], aes(color = ELN)) +
   theme_light() + 
   coord_fixed(ratio = 1) + scale_color_manual(values = ann.colors$ELN)
 plot.eln
 
+
+
 plot.primary<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2)) +
-  geom_point(data=select(plot.df[sample(1:nrow(plot.df)),], -`Primary Diagnosis`), color = "gray") + 
+  geom_point(data=dplyr::select(plot.df[sample(1:nrow(plot.df)),], -`Primary Diagnosis`), color = "gray") + 
   geom_point(size=1, pch=21, aes(fill=`Primary Diagnosis`)) +
   ggforce::facet_wrap_paginate(~`Primary Diagnosis`, page = 14) + 
   scale_fill_manual(values = DiscretePalette(20)) + 
   theme.gg + theme(legend.position = "none")
 plot.primary
 
+
+
 ggarrange(plot.celltype, plot.study, plot.sex, plot.age, plot.fab , plot.eln, legend = F)
+dev.off()
+
+pdf("output/UMAP_ALL_patients_celltypes.pdf")
+lapply(cell.type.order, function(x){
+  p1 <- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2, color = .data[[x]])) +
+  geom_point(size = 2) +
+  theme_light() + 
+  coord_fixed(ratio = 1) + 
+  scale_color_viridis_c(option = "C", na.value = NA)
+  p1
+})
+
 dev.off()
 ```
 
-```{r UMAP mutations}
-plot.df <- data.frame(UMAP = umap$layout, TSNE = tsne$Y, meta.train, check.names = F)
+```{r Pileup FAB}
+df.stacked.violin <- plot.df[, c("Sample","FAB", cell.type.order)] %>% 
+  reshape2::melt(id.vars = c("Sample", "FAB"), measure.vars = cell.type.order,
+                       variable.name = "Cell Type", value.name = "Perc")
+library(cowplot)
 
+
+pdf("output/FAB_vs_CellType_Stacked_Violin.pdf")
+ggplot(df.stacked.violin %>% filter(!is.na(FAB)), aes(`Cell Type`, Perc, fill = FAB)) +
+        geom_violin(scale = "width", adjust = 1, trim = TRUE) +
+        scale_y_continuous(expand = c(0, 0), position="right", labels = function(x)
+                           c(rep(x = "", times = length(x)-2), x[length(x) - 1], "")) +
+        facet_grid(rows = vars(FAB), switch = "y") +
+        theme_cowplot(font_size = 12) +
+        theme(legend.position = "none", panel.spacing = unit(0, "lines"),
+              panel.background = element_rect(fill = NA, color = "black"),
+              strip.background = element_blank(),
+              strip.text = element_text(face = "bold"),
+              strip.text.y.left = element_text(angle = 0),
+              axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + 
+  xlab("") + ylab("Cell Type %") + 
+  scale_fill_manual(values = ann.colors$FAB)
+  dev.off()
+```
+
+```{r}
+quantile(plot.df$Stemness, na.rm = T, c(0, 0.33, 0.66, 1))
+plot.df$Stemness.categorical <- cut(plot.df$Stemness, quantile(plot.df$Stemness, na.rm = T, c(0, 0.5, 1)), labels = c("Low", "High"),
+    include.lowest = T)
+
+df.stacked.stemness <- plot.df[, c("Sample","Stemness.categorical","Study", cell.type.order)] %>% 
+  reshape2::melt(id.vars = c("Sample", "Stemness.categorical", "Study"), measure.vars = cell.type.order,
+                       variable.name = "Cell Type", value.name = "Perc")
+
+
+pdf("output/Stemness_vs_CellType_Stacked_Violin.pdf", width = 12)
+ggplot(df.stacked.stemness %>% filter(!is.na(Stemness.categorical)), aes(`Cell Type`, Perc, fill = `Cell Type`)) +
+        geom_violin(scale = "width", adjust = 1, trim = TRUE) +
+        scale_y_continuous(expand = c(0, 0), position="right", labels = function(x)
+                           c(rep(x = "", times = length(x)-2), x[length(x) - 1], "")) +
+        facet_grid(rows = vars(Stemness.categorical), switch = "y", cols = vars(Study)) +
+        theme_cowplot(font_size = 12) +
+        theme(legend.position = "none", panel.spacing = unit(0, "lines"),
+              panel.background = element_rect(fill = NA, color = "black"),
+              strip.background = element_blank(),
+              strip.text = element_text(face = "bold"),
+              strip.text.y.left = element_text(angle = 0),
+              axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + 
+  xlab("") + ylab("Cell Type %") + 
+  scale_fill_manual(values = ann.colors$cluster)
+  dev.off()
+  
+
+  
+  
+lm.cell.types <-df.stacked.stemness %>% filter(Study != "LEUCE") %>% 
+  split(list(.$Study, .$`Cell Type`)) %>% 
+  purrr::map(~ lm(Perc ~ Stemness.categorical, data = .))
+  
+df.lm.cell.types <- lm.cell.types %>% 
+  purrr::map(summary) %>% 
+  purrr::map_df(broom::tidy) %>% 
+  dplyr::filter(term != "(Intercept)")
+  
+df.lm.cell.types$Study    <- strsplit(names(lm.cell.types), ".", fixed = T) %>% purrr::map(1) %>% do.call(c, .)
+df.lm.cell.types$CellType <- strsplit(names(lm.cell.types), ".", fixed = T) %>% purrr::map(2) %>% do.call(c, .)
+
+pdf("output/Cell_type_vs_Stemness_Slope.pdf")
+
+ggplot(df.lm.cell.types, aes(Study, CellType, fill = estimate,label = ifelse(p.value < 0.05, "*", ""))) + geom_tile() + geom_text(size = 5, color = "white", nudge_y = -0.1) + theme_bw(base_size = 10) + 
+  scale_fill_gradient2(low = "#085ea8", mid = "white", high="#d60e00") + 
+  labs(fill = "Slope", caption = "* p < 0.05") + xlab("") + ylab("")
+
+ggplot(df.lm.cell.types, aes(Study, CellType, fill = ifelse(estimate > 0, "Positive", "Negative"),label = ifelse(p.value < 0.05, "*", ""))) + geom_tile() + geom_text(size = 5, color = "white", nudge_y = -0.1) + theme_bw(base_size = 10) + 
+  scale_fill_manual(values = c("#085ea8", "#d60e00")) + 
+  labs(fill = "Slope", caption = "* p < 0.05") + xlab("") + ylab("")
+dev.off()
+
+lm(Perc ~ Stemness.categorical, data = df.stacked.stemness)
+```
+
+
+
+```{r UMAP mutations}
 plot.df[intersected.mutations] <- lapply(plot.df[intersected.mutations] , 
                                          function(x){factor(ifelse(x > 0, "Yes", "No"), levels = c("Yes", "No"))})
 
@@ -1777,7 +1930,7 @@ pdf("output/UMAP_Common_Mutations.pdf", width = 10, height = 5)
 lapply(c("NPM1", "FLT3", "IDH2", "WT1", "TET2", "JAK2", "MYC", "NRAS"), function(x){
   
   p1 <- ggplot(plot.df[rev(order(plot.df[,x])),] , aes(UMAP.1, UMAP.2)) +
-  geom_point(size=1, data=select(plot.df, -.data[[x]]), color = "gray") +
+  geom_point(size=1, data=dplyr::select(plot.df, -.data[[x]]), color = "gray") +
   geom_point(size=2, aes(color=.data[[x]])) + 
   scale_color_manual(values = c("Red", "Gray"), na.value = NA) + 
   theme.gg + ggtitle(x) 
@@ -1796,18 +1949,361 @@ lapply(c("NPM1", "FLT3", "IDH2", "WT1", "TET2", "JAK2", "MYC", "NRAS"), function
 dev.off()
 ```
 
+### DRUG RESPONSE GRAPHS
+
+
+```{r All spesific drug responses, message=FALSE}
+meta.BEAT.drug <- readxl::read_excel("data/Studies_Latest/BEAT-AML/BEAT_Paper_meta.xlsx", sheet = "Table S10-Drug Responses")
+meta.BEAT.drug <- split(meta.BEAT.drug %>% select(-inhibitor), meta.BEAT.drug$inhibitor)
+
+pdf("output/UMAP_Drug_response_AUC.pdf")
+lapply(names(meta.BEAT.drug), function(drug.name){
+  
+  drug.df <- meta.BEAT.drug[[drug.name]]
+  temp.plot <- merge(plot.df[,c("Sample","Other.Sample", "UMAP.1", "UMAP.2", "cluster", "NPM1")] , 
+                     drug.df, by.x = "Other.Sample", by.y = "lab_id", all.x = T)
+  
+  
+  plot.drug<- ggplot(temp.plot[sample(1:nrow(temp.plot)),] , aes(UMAP.1, UMAP.2, color = auc)) +
+    geom_point(size = 2, data = temp.plot[ is.na(temp.plot$auc),], color = "gray") + 
+    geom_point(size = 2, data = temp.plot[!is.na(temp.plot$auc),]) +
+    theme.gg + ggtitle(drug.name) + 
+    coord_fixed(ratio = 1) + 
+    scale_color_viridis_c(option = "G", direction = -1)
+    
+  temp.plot <- temp.plot %>% mutate(cluster.refined = ifelse(cluster %in% c("CD14 Mono", "HSC", "EMP", "T Cells", "GMP"), cluster, "Others"))
+  
+  plot.drug.cluster<- ggplot(temp.plot, aes(cluster.refined, auc, fill = cluster.refined)) +
+    geom_boxplot(outlier.shape = NA) + 
+    geom_jitter(size = 1, width = 0.1) +
+    coord_flip() + 
+    theme.gg + ggtitle(drug.name) + 
+    scale_fill_manual(values = cell.type.colors) + 
+    theme(legend.position = "none") + xlab("")
+  
+  p.val <- summary(aov(auc ~ cluster.refined, temp.plot))[[1]]$`Pr(>F)`[1]
+  
+  plot.drug | plot.drug.cluster + labs(caption = sprintf('anova p-value: %.5f', p.val))
+  
+  
+}) 
+
+dev.off()
+```
+
+```{r}
+pdf("output/UMAP_Drug_response_NPM1_AUC.pdf")
+lapply(names(meta.BEAT.drug), function(drug.name){
+  
+  
+
+  drug.df <- meta.BEAT.drug[[drug.name]]
+  temp.plot <- merge(plot.df[,c("Sample","Other.Sample", "UMAP.1", "UMAP.2", "cluster", "NPM1")], 
+                     drug.df, by.x = "Other.Sample", by.y = "lab_id", all.x = T)
+  
+  
+  plot.drug<- ggplot(temp.plot[sample(1:nrow(temp.plot)),] , aes(UMAP.1, UMAP.2, color = auc)) +
+    geom_point(size = 2, data = temp.plot[is.na(temp.plot$auc),], color = "gray") + 
+    geom_point(size = 2, data = temp.plot[ifelse(!is.na(temp.plot$auc),temp.plot$NPM1 == "Yes",FALSE), ]) +
+    theme.gg + ggtitle(drug.name) + 
+    coord_fixed(ratio = 1) + 
+    scale_color_viridis_c(option = "G", direction = -1)
+    
+  temp.plot <- temp.plot %>% mutate(cluster.refined = ifelse(cluster %in% c("CD14 Mono", "HSC", "EMP", "T Cells", "GMP"), cluster, "Others"))
+  
+  plot.drug.cluster<- ggplot(temp.plot %>% filter(NPM1 == "Yes") , aes(cluster.refined, auc, fill = cluster.refined)) +
+    geom_boxplot(outlier.shape = NA) + 
+    geom_jitter(size = 1, width = 0.1) +
+    coord_flip() + 
+    theme.gg + ggtitle(drug.name) + 
+    scale_fill_manual(values = cell.type.colors) + 
+    theme(legend.position = "none") + xlab("")
+  
+  p.val <- summary(aov(auc ~ cluster.refined, temp.plot))[[1]]$`Pr(>F)`[1]
+  
+  plot.drug | plot.drug.cluster + labs(caption = sprintf('anova p-value: %.5f', p.val))
+  
+}) 
+
+dev.off()
+```
+
+# Random Forest Drug Prediction
+```{r}
+
+```
+
+
+# Random Forest Survival
+```{r}
+library(randomForestSRC)
+set.seed(5)
+pdf("output/RF_Survival_LOCOV.pdf")
+for(x in c("TCGA", "BEAT", "TARGET")){
+  
+  cat(x)
+  
+  df.rfsrc <- plot.df[plot.df$Study != x & !duplicated(plot.df$Patient), c("overal_survival", "Status", cell.type.order)] 
+  
+  # cell.types <- cell.type.order[!colSums(df.rfsrc[,cell.type.order] > 0) <= 20 & 
+  #                  colMeans(df.rfsrc[, cell.type.order]) > 0.05]
+  # 
+  # cell.types <- cell.type.order
+  #   
+  # df.rfsrc <- df.rfsrc[, c("overal_survival", "Status", cell.types)]
+
+
+  model.rfsrc<- rfsrc(Surv(overal_survival,  Status) ~ . , data=df.rfsrc, ntree = 1000, importance = T)
+  
+  plot(model.rfsrc)
+  plot.df$RFSRC.pred <- predict(model.rfsrc, newdata = plot.df[, cell.type.order, drop = F])$predicted
+  
+  
+  new.df <- plot.df[plot.df$Study == x,]
+  model <- survfit(Surv(overal_survival,  Status) ~ RFSRC.pred > median(RFSRC.pred, na.rm = T), 
+                     data=new.df)
+  
+  
+  
+  p <- ggsurvplot(model, 
+        conf.int = F,
+        legend.labs = c("RF Score < Median", "RF Score > Median"),
+        palette =  c("#085ea8", "#d60e00"),
+        pval = sprintf("p = %.3f",surv_pvalue(model, method = "1")$pval),
+        title = x,
+        # # Add risk table
+        risk.table = TRUE, censor.size = 3,
+        tables.height = 0.25, legend = "none",
+        tables.theme = theme_cleantable(),
+        
+        ggtheme = theme_bw(base_size = 10))
+
+  print(p)
+}
+dev.off()
+
+```
+
+
+```{r Predict HSC/EMP}
+ggsurvplot(survfit(Surv(overal_survival,  Status) ~ APS > median(APS) , data=plot.df %>% filter(NPM1 =="Yes")), 
+           pval = T,conf.int = F, risk.table = T)
+```
+
+```{r timeROC}
+ggsurvplot(survfit(Surv(overal_survival,  Status) ~ ELN , data=plot.df[plot.df$Study == "TARGET",]), pval = T,conf.int = F, risk.table = F)
+```
+
+```{r Predicting APS scores}
+temp <- plot.df
+
+binary.celltypes <- cell.type.order[colMeans(temp[temp$Study == "BEAT", cell.type.order]) < 0.05]
+temp[,binary.celltypes] <- ifelse(temp[,binary.celltypes] > 0, 1, 0)
+
+coef.mat <- matrix(0, length(cell.type.order), 100)
+rownames(coef.mat) <- cell.type.order
+
+
+train.idx <- temp$Study == "BEAT" & !duplicated(temp$Patient) & temp$Recurrence == "No" 
+
+
+coef.mat <- matrix(0, length(cell.type.order), 100)
+rownames(coef.mat) <- cell.type.order
+for(i in 1:ncol(coef.mat)){
+  set.seed(i)
+  cv.fit <- cv.glmnet(x = as.matrix(temp[train.idx,cell.type.order]), 
+                    y = temp[train.idx, "APS"], nfolds = 10, intercept = F)
+  coef.mat[,i] <- as.matrix(coef(cv.fit, s = cv.fit$lambda.min))[-1,]
+}
+
+lasso.coefs <- rowMeans(coef.mat)[rowMeans(coef.mat) != 0 & rowSums(abs(coef.mat) > 0) > 90]
+
+lasso.coefs
+
+
+
+
+idx.test <- ifelse(!duplicated(temp$Patient), 
+                   ifelse(temp$Study == "BEAT", 
+                          plot.df$Recurrence == "No", TRUE),
+                   FALSE)
+
+temp$APS.preds.lasso <- NA
+temp[idx.test,]$APS.preds.lasso <- predict(cv.fit, newx = as.matrix(temp[idx.test,cell.type.order]), 
+                                           s = cv.fit$lambda.min)
+
+temp$APS.preds.lasso <- NA
+temp[idx.test,]$APS.preds.lasso <- rowSums(sweep(temp[idx.test,names(lasso.coefs)], 2, lasso.coefs, FUN = "*"))
+
+library(ggpmisc)
+formula <- y ~ x
+ggplot(temp, aes(APS, APS.preds.lasso)) + geom_point() + facet_wrap(~ Study) + 
+  geom_smooth(method = "lm", formula = formula, se = F, color ="black") +
+  stat_poly_eq(aes(label = paste(..rr.label.., sep = "~~~")), 
+               label.x.npc = "left", label.y.npc = 0.95,
+               formula = formula, parse = TRUE, size = 3) + theme.gg
+
+plot.ICS <- ggplot(temp[sample(1:nrow(temp)),] , aes(UMAP.1, UMAP.2, color = APS.preds.lasso)) +
+  geom_point(size = 2, data = temp[ is.na(temp$APS.preds.lasso),], color = "gray") + 
+  geom_point(size = 2, data = temp[!is.na(temp$APS.preds.lasso),]) +
+  theme_light() + 
+  coord_fixed(ratio = 1) +
+  scale_color_viridis_c(option = "B")
+
+plot.ICS
+```
+
+
+```{r Predicting APS scores}
+temp <- plot.df
+
+binary.celltypes <- cell.type.order[colMeans(temp[, cell.type.order]) < 0.05]
+temp[,binary.celltypes] <- ifelse(temp[,binary.celltypes] > 0, 1, 0)
+
+setdiff(cell.type.order, binary.celltypes)
+
+fit <- lm(APS ~  . + 0, 
+          temp[temp$Study == "BEAT" & !duplicated(plot.df$Patient) & plot.df$Recurrence == "No",
+               c("APS", cell.type.order)])
+summary(fit)
+
+library(MASS)
+fit <- stepAIC(fit)
+
+temp$APS.preds.lm <- predict(fit, newdata = temp[,cell.type.order])
+
+
+ggplot(temp, aes(APS, APS.preds.lm)) + geom_point() + facet_wrap(~ Study) + 
+  geom_smooth(method = "lm", formula = formula, se = F, color ="black") +
+  stat_poly_eq(aes(label = paste(..rr.label.., sep = "~~~")), 
+               label.x.npc = "left", label.y.npc = 0.95,
+               formula = formula, parse = TRUE, size = 3) + theme.gg
+
+
+plot.APS.preds<- ggplot(temp[sample(1:nrow(temp)),] , aes(UMAP.1, UMAP.2, color = APS.preds.lm)) +
+  geom_point(size = 2) +
+  theme_light() + 
+  coord_fixed(ratio = 1) + 
+  scale_color_viridis_c(option = "B", na.value = NA)
+plot.APS.preds
+
+
+ggplot(temp, aes(GMP, APS)) + geom_point()
+
+ggsurvplot(survfit(Surv(overal_survival,  Status) ~ APS.preds.lm > median(APS.preds.lm) , data=temp[temp$Study == "TCGA",]), 
+           pval = T,conf.int = F, risk.table = F)
+ggsurvplot(survfit(Surv(overal_survival,  Status) ~ APS.preds.lm > median(APS.preds.lm) , data=temp[temp$Study == "BEAT",]), 
+           pval = T,conf.int = F, risk.table = F)
+ggsurvplot(survfit(Surv(overal_survival,  Status) ~ APS.preds.lm > median(APS.preds.lm) , data=temp[temp$Study == "TARGET",]), 
+           pval = T,conf.int = F, risk.table = F)
+
+```
+
+```{r}
+
+df.CTC <- plot.df[,c("HSC", "GMP", "T Cells")]
+df.CTC$`T Cells` <- ifelse(df.CTC$`T Cells` > 0, 1, 0)
+
+
+# (−1.7016 × GMP-like) + (0.2015 × HSC-like) + (−0.293 × T)
+CTC.coefs <- c(0.2015, -1.7016, -0.293)
+
+plot.df$CTC <- rowSums(sweep(df.CTC, 2, CTC.coefs, FUN = "*"))
+
+plot.CTC<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2, color = CTC)) +
+  geom_point(size = 2) +
+  theme_light() + 
+  coord_fixed(ratio = 1) + 
+  scale_color_viridis_c(option = "B")
+  
+plot.CTC
+
+ggsurvplot(survfit(Surv(overal_survival,  Status) ~ CTC > median(CTC) , data=plot.df[plot.df$Study == "BEAT" & !duplicated(plot.df$Patient) & plot.df$Recurrence == "No",]), pval = T,conf.int = F, risk.table = T)
+
+ggsurvplot(survfit(Surv(overal_survival,  Status) ~ CTC > median(CTC) , data=plot.df[plot.df$Study == "TCGA",]), pval = T,conf.int = F, risk.table = T)
+
+
+ggsurvplot(survfit(Surv(overal_survival,  Status) ~ CTC > median(CTC) , data=plot.df[plot.df$Study == "TARGET",]), pval = T,conf.int = F, risk.table = T)
+```
+
+
+```{r}
+idx <- intersect(intersect(which(complete.cases(plot.df[, c("overal_survival", "Status")])), 
+                           which(plot.df[, c("overal_survival")] != 0)), 
+                 which(plot.df$Study == "TCGA"))
+
+# store it in a temp
+temp <- plot.df
+
+binary.celltypes <- cell.type.order[colMeans(temp[temp$Study == "TCGA", cell.type.order]) < 0.01]
+
+temp[,binary.celltypes] <- ifelse(temp[,binary.celltypes] > 0, 1, 0)
+
+
+x <- temp[idx, cell.type.order]
+y <- Surv(temp[idx,"overal_survival"], temp[idx,"Status"])
+
+
+
+
+coef.mat <- matrix(0, length(cell.type.order), 100)
+rownames(coef.mat) <- cell.type.order
+for(i in 1:ncol(coef.mat)){
+  set.seed(i)
+  suppressWarnings(cvfit <- cv.glmnet(as.matrix(x), y, family = "cox", nfolds = 10, intercept = F, weights = rowSums(x > 0)))
+  coef.mat[,i] <- as.matrix(coef(cvfit, s = cvfit$lambda.min))
+}
+
+lasso.coefs <- rowMeans(coef.mat)[rowMeans(coef.mat) != 0 & rowSums(abs(coef.mat) > 0 ) > 90]
+
+lasso.coefs
+
+temp$lasso.scores <- rowSums(sweep(temp[,names(lasso.coefs)], 2, lasso.coefs, FUN = "*"))
+
+ggsurvplot(survfit(Surv(overal_survival,  Status) ~ lasso.scores >  median(lasso.scores), data=temp[temp$Study == "BEAT",]), pval = T,conf.int = F, risk.table = F)
+
+ggsurvplot(survfit(Surv(overal_survival,  Status) ~ lasso.scores > median(lasso.scores) , data=temp[temp$Study == "TCGA",]), 
+           pval = T,conf.int = F, risk.table = F)
+
+ggsurvplot(survfit(Surv(overal_survival,  Status) ~ lasso.scores > median(lasso.scores), data=temp[temp$Study == "TARGET",]), 
+           pval = T,conf.int = F, risk.table = F)
+
+
+
+ggplot(temp, aes(UMAP.1, UMAP.2, color = lasso.scores)) +
+  geom_point(size = 2) +
+  theme_light() + 
+  coord_fixed(ratio = 1) + 
+  scale_color_viridis_c()
+
+```
+
+
 
 ```{r NPM1}
-df.npm1 <- meta.train %>% filter(NPM1 == 1)
 
-model.npm1.sex <- survfit(Surv(overal_survival,  Status) ~ Sex, data=df.npm1)
-model.npm1.sex
-ggsurvplot(model.npm1.sex, pval = T)
+
+df.npm1 <- plot.df %>% filter(NPM1 == "Yes")
+
+
+df.npm1$NPM1.clusters <- ifelse(df.npm1$cluster %in% c("GMP", "CD14 Mono", "CD16 Mono"), "GMP & Monocytes", "Others")
+model.npm1 <- survfit(Surv(overal_survival,  Status) ~ NPM1.clusters , data=df.npm1)
+
+ggsurvplot(model.npm1, 
+          pval = TRUE, # Change legends: title & labels
+          legend.title = "Cluster", conf.int = F,
+          legend.labs = gsub("NPM1.clusters=", "", names(model.npm1$strata)),
+          
+           
+           # # Add risk table
+           risk.table = TRUE, censor.size = 3,
+           tables.height = 0.25, legend = "none",
+           tables.theme = theme_cleantable(),
+           
+           ggtheme = theme_bw(base_size = 12))
 
 ggplot(data=df.npm1, aes(Sex, Age)) +geom_violin() + geom_boxplot(width = 0.2) + geom_jitter(width = 0.1) + theme.gg + stat_compare_means(method = "t.test")
 
-
-model.npm1.sex <- survfit(Surv(overal_survival,  Status) ~ Sex, data=df.npm1)
 ```
 
 
@@ -1919,6 +2415,24 @@ dev.off()
 ```
 
 
+
+
+
+```{r Marieke Stuff}
+
+df.NPM1 <- deconv.LUMC[rownames(meta.train[meta.train$Study == "LUMC" & meta.train$NPM1 == 1,]),]
+
+clusters.NPM1 <- apply(df.NPM1, 1, function(x){names(x)[which(x == max(x))]})
+new.order.NPM1 <- patientOrder(df.NPM1, clusters.NPM1, cell.type.order)
+
+df.NPM1 <- df.NPM1 %>% melt() %>% as.data.frame()
+df.NPM1$Var1 <- factor(df.NPM1$Var1, levels = rev(new.order.NPM1))
+
+pdf("output/NPM1_LUMC_IC.pdf")
+ df.NPM1 %>% ggplot(aes(Var1, value * 100, fill = Var2)) + geom_bar(stat = "identity") + theme.gg + scale_fill_manual(values = cell.type.colors[1:22]) + coord_flip() + ylab("Cell Type %") + xlab("") + labs(fill = "Cell Types") + ggtitle("Immune compositions of NPM1 samples")
+ dev.off()
+
+```
 
 
 

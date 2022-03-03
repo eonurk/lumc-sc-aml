@@ -112,15 +112,22 @@ vg.all <- vg.all[,vg.all$CellType != ""]
 
 pdf("output/VG_all_UMAPs.pdf")
 DimPlot(vg.all, group.by = "Healthy_CellType", label = F, order = T)
-DimPlot(vg.all, group.by = "CellType", label = F, shuffle = T, cols = DiscretePalette(22))
+DimPlot(vg.all, group.by = "CellType", label = F, shuffle = T,pt.size = 0.6, cols = sample(DiscretePalette(22)))
 DimPlot(vg.all, group.by = "sample_type", label = F, shuffle = T)
 DimPlot(vg.all, group.by = "Sample", label = F, shuffle = T)
 DimPlot(vg.all, group.by = "After_treatment", label = F, shuffle = T)
 features <-  c("LILRB4", "MYO1G", "IL10RA", "ARHGAP45","CD34", "PTPRC")
 
-FeaturePlot(vg.all, features, combine = T, pt.size = 0.1)
-plot_density(vg.all, features)
-VlnPlot(vg.all, c(features, "GAPDH", "HSP90", "ACTB", "HMBS", "PBGD") , group.by = "CellType", stack = T, sort = F, flip = TRUE) + 
+FeaturePlot(vg.all, features) & theme(legend.key.height= unit(0.3, 'cm'), legend.key.width= unit(0.3, 'cm'))
+plot_density(vg.all, features) & coord_fixed(ratio = 1) & theme(legend.key.height= unit(0.3, 'cm'), legend.key.width= unit(0.3, 'cm'), legend.title = element_text(size=6), legend.text = element_text(size=5)) & FontSize(
+  x.text = 7,
+  y.text = 7,
+  x.title = 7,
+  y.title = 7,
+  main = 8
+)
+VlnPlot(vg.all, c(features, "GAPDH", "HSP90", "ACTB", "HMBS", "PBGD") , 
+        group.by = "CellType", stack = T, sort = F, flip = TRUE) + 
   theme(legend.position = "none")
 
 dev.off()
