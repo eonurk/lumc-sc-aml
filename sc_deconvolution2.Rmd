@@ -33,15 +33,13 @@ saveFigs = FALSE
 source("utils/wrangleMat.R") 
 
 # ggplot theme
-theme.gg <- theme_bw(base_size = 10) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+theme.gg <- theme_bw(base_size = 12) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
 ```
 
-
-Having established the healthy bone marrow (BM) single-cell map, we can deconvolute
-bulk AML patients from different cohorts (TCGA-AML, TARGET, and BEAT-AML).
-
+Having established the healthy bone marrow (BM) single-cell map, we can deconvolute bulk AML patients from different cohorts (TCGA-AML, TARGET, and BEAT-AML).
 
 Importing healthy BM map:
+
 ```{r import BM}
 # loaded healthy BM map
 # load("cache/scmap_BM.RDS")
@@ -61,8 +59,9 @@ ref <- ref[, !ref$label.new %in% c("Macrophage", "Platelet", "Stromal")]
 ref <- ScaleData(ref, verbose = FALSE)
 ref <- RunPCA(ref, features = VariableFeatures(ref),verbose = FALSE, npcs = 30)
 ref <- RunUMAP(ref, dims = 1:30)
-```
 
+
+```
 
 ```{r create C.eset}
 C.eset <- ExpressionSet(assayData = as.matrix(GetAssayData(ref)), phenoData = new("AnnotatedDataFrame",ref@meta.data))
@@ -75,8 +74,308 @@ cell.type.order
 ```
 
 
+```{r}
+pdf("output/Integrated_number_of_cells.pdf", width = 8, height = 6)
+ref@meta.data%>% dplyr::count_("label.new") %>% ggplot(aes(x =reorder(label.new, n), y = n)) + 
+  geom_bar(stat = "identity") + 
+  scale_fill_manual(values = c("#ad001a")) + geom_text(aes(label = n), nudge_y = -0.2, color ="white", size = 3) + 
+  theme.gg + labs(y = "Number of cells", x = "") + scale_y_log10() + coord_flip()
+dev.off()
+```
+
+
+
+```{r control experiment}
+# xmat <- ref@assays$integrated
+# 
+# # exponentiate the data to non-log scale
+# xmat@data <- expm1(xmat@data)
+# 
+# xmeta <- ref@meta.data
+# xmeta$Cell <- rownames(xmeta)
+# 
+# sample.proportions <- seq(0.5, 1, 0.1)
+# total.cells <- c(1000)
+# 
+# 
+# C.eset <- Biobase::ExpressionSet(assayData = as.matrix(xmat@data), phenoData = Biobase::AnnotatedDataFrame(xmeta))
+# breaksList = seq(0,1, by = .001)
+# 
+# lapply(sample.proportions, function(sample.proportion){
+#   lapply(total.cells,  function(total.cell){
+#     
+#     sim.true <-  NULL
+#     sim.bulks <- lapply(cell.type.order, function(x){
+#       
+#       real.val <- xmeta[xmeta$label.new == x,] %>% 
+#         slice_sample(n = sample.proportion * total.cell, replace = T)
+#       
+#       noise <- xmeta[xmeta$label.new != x,] %>% 
+#         add_count(label.new) %>% 
+#         mutate (n = 1/n) %>% 
+#         slice_sample(n = ((1-sample.proportion) * total.cell),weight_by = n, replace = T) %>% 
+#         dplyr::select(-n)
+#       
+#       cells <- rbind(real.val, noise)
+#       
+#       sim.true[[x]] <<- table(cells$label.new)/sum(table(cells$label.new))
+#       
+#       sim.bulk <- rowSums(xmat[, cells$Cell])
+#       
+#       return(sim.bulk)
+#     }) %>% do.call(cbind, .) %>% as.data.frame
+#     
+#     colnames(sim.bulks) <- cell.type.order
+#     
+#     # # Simulated bulks self deconvolution
+#     # sim.results <- CIBERSORT((pb.sum), (sim.bulks), perm = 1000, QN = F)
+#     
+#     # calculate overall rmse
+# 
+#     # sometimes there are minus values
+#     sim.bulks[sim.bulks <0] <- 0
+#     T.eset <- ExpressionSet(assayData = as.matrix(sim.bulks))
+#     
+#     sim.results <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'label.new',
+#                                                 markers = NULL, normalize = FALSE, samples = 'Sample', 
+#                                                 verbose = F)
+#     
+#     # total.rmse <- lapply(cell.type.order, function(x){
+#     #   
+#     #   y <- sim.true[[x]][cell.type.order] 
+#     #   yhat <- sim.results[x, cell.type.order]
+#     #   
+#     #   error <- y - yhat
+#     #   
+#     #   sum(error^2, na.rm = T)
+#     # }) %>% unlist %>% sum
+#     
+#     music.results <- sim.results$Est.prop.weighted
+#     
+#     missing.cols <- cell.type.order[!cell.type.order %in% colnames(music.results)]
+#     
+#     new.order <- setdiff(cell.type.order, missing.cols)
+#     
+#     pdf(paste0("output/Integrated_pseudobulk_deconv_Music_", sample.proportion,"prop_",total.cell,"cells.pdf"), 
+#         width = 12, height = 12)
+#     pheatmap(music.results[new.order,new.order], cluster_rows = F, cluster_cols = F,
+#              color = pheatmap.colors, breaks = breaksList, border_color = NA, display_numbers = T, fontsize = 7,
+#              cellwidth = 15, cellheight = 15)
+#     dev.off()
+#         
+#     # 
+#     # breaksList = seq(0,1, by = .001)
+#     # pheatmap.colors <- colorRampPalette((brewer.pal(n = 7, name = "Blues")))(length(breaksList))
+#     # pdf(paste0("output/Integrated_pseudobulk_deconv_CIBERSORT_", sample.proportion,"prop_",total.cell,"cells.pdf"), width = 12, height = 12)
+#     # pheatmap(sim.results[cell.type.order, cell.type.order], cluster_cols = F, cluster_rows = F, 
+#     #          color = pheatmap.colors, breaks = breaksList, border_color = NA, display_numbers = T, fontsize = 7,
+#     #          cellwidth = 15, cellheight = 15)
+#     # dev.off()
+#     
+#     # return(total.rmse)
+#     
+#   })
+# })
+```
+
+
+
+
+
+
+```{r manton 40K for reference}
+# install.packages("~/Downloads/hcabm40k.SeuratData_3.0.0.tar.gz", repos = NULL, type = "source")
+
+library(hcabm40k.SeuratData)
+data("hcabm40k")
+
+hcabm40k <- UpdateSeuratObject(hcabm40k)
+
+predictions <- read.delim('data/azimuth_pred_HCA40K.tsv', row.names = 1)
+hcabm40k <- AddMetaData(
+	object = hcabm40k,
+	metadata = predictions)
+
+hcabm40k$label.new <- hcabm40k$predicted.celltype.l2
+hcabm40k$label.new[hcabm40k$predicted.celltype.l2 %in% c("CD4 Naive", "CD8 Memory", "CD4 Effector", "MAIT", "CD4 Memory", "T Proliferating", 
+                                 "CD8 Effector_2", "CD8 Naive", "CD8 Effector_1", "CD8 Effector_3")] <- "T Cells"
+hcabm40k$label.new[hcabm40k$predicted.celltype.l2 %in% c("NK", "NK Proliferating", "NK CD56+", "ILC" )] <- "NK Cells"
+hcabm40k$label.new[hcabm40k$predicted.celltype.l2 %in% c("transitional B","Memory B", "Naive B" )] <- "B Cells"
+hcabm40k$label.new[hcabm40k$predicted.celltype.l2 %in% c("cDC1","cDC2" )] <- "cDC"
+
+
+# remove the cell types with less than 100 cells (Macrophage 9, Platelet 2, Stromal 18 cells)
+hcabm40k <- hcabm40k[, !hcabm40k$label.new %in% c("Macrophage", "Platelet", "Stromal")]
+# 
+hcabm40k <- NormalizeData(hcabm40k)
+hcabm40k <- FindVariableFeatures(object = hcabm40k)
+hcabm40k <- ScaleData(hcabm40k, verbose = FALSE)
+hcabm40k <- RunPCA(hcabm40k, features = VariableFeatures(hcabm40k),verbose = FALSE)
+hcabm40k <- RunUMAP(hcabm40k, dims = 1:50)
+
+
+
+pdf("output/UMAP_Manton_samples.pdf", width = 12, height = 8)
+
+DimPlot(hcabm40k, repel = T, group.by = "label.new", label.size = 4, shuffle = T,
+        cols = cell.type.colors[!names(cell.type.colors) %in% c("Mixed Profiles", "Others")]) + theme.gg + ggtitle("")
+dev.off()
+
+
+```
+
+
+```{r}
+xmeta <- ref@meta.data
+
+xmat <- ref@assays$integrated
+
+# # exponentiate the data to non-log scale
+xmat@data <- expm1(xmat@data)
+
+
+xmeta$cell <- rownames(xmeta)
+
+cell.types.hca40k <- unique(xmeta$label.new)
+
+sample.proportion <- 0.8
+total.cell <- 1e3
+
+sim.true <- matrix(data = 0, nrow = length(cell.types.hca40k), ncol = length(cell.type.order))
+
+colnames(sim.true) <- cell.type.order
+rownames(sim.true) <- cell.types.hca40k
+
+sim.bulks <- lapply(cell.types.hca40k, function(x){
+  
+  real.val <- xmeta[xmeta$label.new == x,] %>% 
+    slice_sample(n = sample.proportion * total.cell, replace = T)
+  
+  noise <- xmeta[xmeta$label.new != x,] %>% 
+    add_count(label.new) %>% 
+    mutate (n = 1/n) %>% 
+    slice_sample(n = ((1-sample.proportion) * total.cell),weight_by = n, replace = T) %>% 
+    dplyr::select(-n)
+  
+  cells <- rbind(real.val, noise)
+  
+  tbl <- table(cells$label.new)/sum(table(cells$label.new))
+  
+  sim.true[x,names(tbl)] <<- tbl
+  
+  sim.bulk <- rowSums(xmat[, cells$cell])
+  
+  return(sim.bulk)
+}) %>% do.call(cbind, .) %>% as.data.frame
+
+colnames(sim.bulks) <- cell.types.hca40k
+    
+# sanity
+sim.bulks[sim.bulks <0] <- 0
+
+T.eset <- ExpressionSet(assayData = as.matrix(sim.bulks))
+
+sim.results <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'label.new',
+                                            markers = NULL, normalize = FALSE, samples = 'Sample', 
+                                            verbose = F)
+
+
+weights <- sim.results$Est.prop.weighted
+
+
+pdf("output/Music_Ref_sc_simulation_results.pdf", width = 8, height = 8)
+pheatmap(weights[intersect(cell.type.order, cell.types.hca40k),intersect(cell.type.order, colnames(weights))], 
+         cluster_cols = F, cluster_rows = F, color = pheatmap.colors, display_numbers = T,
+         cellwidth = 15, cellheight = 15, fontsize = 7, 
+         border_color = NA)
+dev.off()
+
+pdf("output/Music_Ref_sc_simulation_results_real.pdf", width = 8, height = 8)
+pheatmap(sim.true[intersect(cell.type.order, cell.types.hca40k),intersect(cell.type.order, colnames(weights))], 
+         cluster_cols = F, cluster_rows = F, color = pheatmap.colors, display_numbers = T,
+         cellwidth = 15, cellheight = 15, fontsize = 7, 
+         border_color = NA)
+dev.off()
+```
+
+
+
+```{r}
+xmeta <- hcabm40k@meta.data
+
+xmat <- hcabm40k@assays$RNA
+
+# # exponentiate the data to non-log scale
+xmat@data <- expm1(xmat@data)
+
+
+xmeta$cell <- rownames(xmeta)
+
+cell.types.hca40k <- unique(xmeta$label.new)
+
+sample.proportion <- 0.8
+total.cell <- 1e3
+
+sim.true <- matrix(data = 0, nrow = length(cell.types.hca40k), ncol = length(cell.type.order))
+
+colnames(sim.true) <- cell.type.order
+rownames(sim.true) <- cell.types.hca40k
+sim.bulks <- lapply(cell.types.hca40k, function(x){
+  
+  real.val <- xmeta[xmeta$label.new == x,] %>% 
+    slice_sample(n = sample.proportion * total.cell, replace = T)
+  
+  noise <- xmeta[xmeta$label.new != x,] %>% 
+    add_count(label.new) %>% 
+    mutate (n = 1/n) %>% 
+    slice_sample(n = ((1-sample.proportion) * total.cell),weight_by = n, replace = T) %>% 
+    dplyr::select(-n)
+  
+  cells <- rbind(real.val, noise)
+  
+  tbl <- table(cells$label.new)/sum(table(cells$label.new))
+  
+  sim.true[x,names(tbl)] <<- tbl
+  
+  sim.bulk <- rowSums(xmat[, cells$cell])
+  
+  return(sim.bulk)
+}) %>% do.call(cbind, .) %>% as.data.frame
+
+colnames(sim.bulks) <- cell.types.hca40k
+    
+# sanity
+sim.bulks[sim.bulks <0] <- 0
+
+T.eset <- ExpressionSet(assayData = as.matrix(sim.bulks))
+
+sim.results <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'label.new',
+                                            markers = NULL, normalize = FALSE, samples = 'Sample', 
+                                            verbose = F)
+
+
+weights <- sim.results$Est.prop.weighted
+
+
+pdf("output/Music_hca40k_sc_simulation_results.pdf", width = 8, height = 8)
+pheatmap(weights[intersect(cell.type.order, cell.types.hca40k),intersect(cell.type.order, colnames(weights))], 
+         cluster_cols = F, cluster_rows = F, color = pheatmap.colors, display_numbers = T,
+         cellwidth = 15, cellheight = 15, fontsize = 7, 
+         border_color = NA)
+dev.off()
+
+pdf("output/Music_hca40k_sc_simulation_results_real.pdf", width = 8, height = 8)
+pheatmap(sim.true[intersect(cell.type.order, cell.types.hca40k),intersect(cell.type.order, colnames(weights))], 
+         cluster_cols = F, cluster_rows = F, color = pheatmap.colors, display_numbers = T,
+         cellwidth = 15, cellheight = 15, fontsize = 7, 
+         border_color = NA)
+dev.off()
+```
+
 ### TCGA
-Now we can start our analyses with TCGA-AML data, 
+
+Now we can start our analyses with TCGA-AML data,
+
 ```{r prepare TCGA data, cache=TRUE}
 # load count matrix 
 count.TCGA <- read.csv("data/Studies_Latest/TCGA/TCGA_ht_seq.csv")
@@ -167,16 +466,14 @@ deconv.TCGA <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'labe
 head(deconv.TCGA)[,1:3]
 ```
 
-Now that we have the deconvoluted fractions, we can create a heatmap with patients 
-on the rows and cell types on the column, and have a look at it but first, 
-we'll assign colors to each deconvoluted cell type for results' reproducibility.
+Now that we have the deconvoluted fractions, we can create a heatmap with patients on the rows and cell types on the column, and have a look at it but first, we'll assign colors to each deconvoluted cell type for results' reproducibility.
+
 ```{r determine colors for each cell type}
 # cell.type.colors <- c(as.vector(paletteer::paletteer_d("ggthemes::Tableau_20")), "#7d1a1a", "#595959")
 cell.type.colors <- DiscretePalette(ncol(deconv.TCGA))
 cell.type.colors <- c(cell.type.colors, "#595959")
 names(cell.type.colors) <- (c(colnames(deconv.TCGA), "Others"))
 ```
-
 
 ```{r}
   
@@ -191,14 +488,22 @@ DimPlot(ref, repel = T, group.by = "label.new", label.size = 4, shuffle = T,
   coord_fixed() + theme.gg + ggtitle("")
 dev.off()
 
-alot.tube.genes <- c("CD45", "CD34", "CD19", "MPO", "CD7", "CD3D", "CD79A")
 
-DotPlot(ref, group.by = "label.new", features = alot.tube.genes) + xlab("ALOT genes")
+pdf("output/UMAP_Integrated_Sample_labeled_azimuth_refined.pdf", width = 10, height = 8)
+DimPlot(ref, group.by = "Sample", label.size = 4, shuffle = T,pt.size = 0.1,
+        cols = paletteer_d("ggsci::category20_d3")) +  
+  coord_fixed() + theme.gg + ggtitle("")
+dev.off()
+
+pdf("output/UMAP_Integrated_Study_labeled_azimuth_refined.pdf", width = 10, height = 8)
+DimPlot(ref, group.by = "study", label.size = 4, shuffle = T,pt.size = 0.1,
+        cols = (paletteer_d("rcartocolor::Pastel"))) +  
+  coord_fixed() + theme.gg + ggtitle("")
+dev.off()
 ```
 
-
-
 Now, we can have our heatmap:
+
 ```{r creating the immune composition heatmap, fig.width=15, fig.height=5}
 
 
@@ -276,8 +581,8 @@ if (saveFigs){
 }
 ```
 
-
 Having the cluster assignments, we can check the survival curves:
+
 ```{r survival all clusters, fig.height=4}
 temp.TCGA <- cbind(meta.TCGA, cluster = clusters.TCGA)
 
@@ -285,7 +590,7 @@ temp.TCGA <- cbind(meta.TCGA, cluster = clusters.TCGA)
 # simple clustering
 km.tcga.cluster <- survfit(Surv(overal_survival, Status) ~ cluster, data=temp.TCGA)
 
-
+s
 plot.surv.all.TCGA <- 
     ggsurvplot(km.tcga.cluster, 
             pval = T,
@@ -306,7 +611,6 @@ plot.surv.all.TCGA <-
 plot.surv.all.TCGA
 ```
 
-
 ```{r include=FALSE}
 if(saveFigs)
 {    
@@ -315,10 +619,6 @@ if(saveFigs)
     dev.off()
 }
 ```
-
-
-
-
 
 ```{r survival redefined clusters}
 
@@ -358,7 +658,6 @@ if(saveFigs)
 }
 ```
 
-
 ```{r}
 # make GMP the reference
 temp.TCGA$cluster.refined <- factor(temp.TCGA$cluster.refined, levels = c("GMP", "CD14 Mono", "HSC"))
@@ -366,12 +665,11 @@ TCGA.cox <- coxph(Surv(overal_survival, Status) ~ cluster.refined, data = temp.T
 TCGA.cox
 ggforest(TCGA.cox)
 ```
+
 ```{r}
 TCGA.cox.ELN <- coxph(Surv(overal_survival, Status) ~ ELN, data = temp.TCGA)
 ggforest(TCGA.cox.ELN)
 ```
-
-
 
 ```{r}
 # ELN status as covariate
@@ -410,7 +708,6 @@ plot.ELN.TCGA <-
 plot.ELN.TCGA
 ```
 
-
 ```{r include=FALSE}
 
 if(saveFigs){
@@ -419,7 +716,6 @@ if(saveFigs){
     dev.off()
 }
 ```
-
 
 ```{r}
 # make GMP the reference
@@ -470,8 +766,6 @@ ggplot(df.rs %>% filter(!is.na(ELN)), aes(preds,ELN,  fill = ELN)) +
     theme_bw() + labs(fill = "ELN") + xlab("Risk Score") + ylab("ELN") + geom_vline(xintercept = c(qtiles[2:3]), alpha = 0.5)
 ```
 
-
-
 ```{r}
 if(saveFigs){
   pdf("output/TCGA_IP_ELN.pdf")
@@ -479,7 +773,6 @@ if(saveFigs){
   dev.off()
 }
 ```
-
 
 ```{r}
 plot.tcga.alluvial <- temp.TCGA %>% dplyr::select(ELN, patient.groups) %>% dplyr::count(ELN, patient.groups, name = "Freq") %>% 
@@ -498,7 +791,6 @@ if(saveFigs){
     dev.off()
 }
 ```
-
 
 ```{r NPM1 for different cluster assignments}
 temp.TCGA$NPM1.cluster <- ifelse(temp.TCGA$primary_diagnosis == "Acute myeloid leukemia with mutated NPM1",
@@ -576,11 +868,8 @@ if(saveFigs){
 }
 ```
 
+We can also project the [stemness score](https://www.nature.com/articles/nature20598) of the patients per cluster.
 
-
-
-
-We can also project the [stemness score](https://www.nature.com/articles/nature20598) of the patients per cluster. 
 ```{r}
 
 p1 <- ggplot(temp.TCGA, aes(cluster, Stemness, fill = cluster)) + 
@@ -610,11 +899,10 @@ if(saveFigs){
 }
 ```
 
-
 ### LUMC
 
-We have 100 bulk RNA-seq samples from LUMC (in house data). We can deconvolute them 
-using the same pipeline. 
+We have 100 bulk RNA-seq samples from LUMC (in house data). We can deconvolute them using the same pipeline.
+
 ```{r deconvoluting LUMC, cache=TRUE}
 # count.TCGA <- data.table::fread("data/Studies_Latest/TCGA/TCGA_ht_seq.csv")
 # 
@@ -731,6 +1019,7 @@ deconv.LUMC <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'labe
 ```
 
 Now that, we have the deconvoluted fractions we can have the heatmap:
+
 ```{r heatmap LUMC, fig.width=15, fig.height=5, cache=TRUE}
 
 ann.row.LUMC <- as.data.frame(cbind(pdiagnoses.LUMC, 
@@ -800,19 +1089,23 @@ print(p2)
 
 temp.LUMC <- temp.LUMC %>% add_count(cluster) %>% mutate(cluster.refined = ifelse(n>3, cluster, "Others"))
 
-pdf("output/LUMC_Blast_vs_Cell_Types.pdf", width = 4, height = 4)
+pdf("output/LUMC_Blast_vs_Cell_Types.pdf", width = 6, height = 6)
 ggplot(temp.LUMC, aes(cluster.refined, Blast, fill = cluster.refined)) + 
   geom_boxplot() + geom_jitter(width = 0.1) + 
   theme.gg + ylab("Reported Blast %") + xlab("") + ggtitle("LUMC") + 
   scale_fill_manual(values = cell.type.colors)+ 
-  labs(fill = "") + theme(axis.text.x=element_text(angle=45,hjust=1), legend.position  = "none") 
+  labs(fill = "", caption = sprintf('anova p-value: %.5f', summary(aov(Blast ~cluster.refined,data= temp.LUMC))[[1]]$`Pr(>F)`[1])) + theme(axis.text.x=element_text(angle=45,hjust=1), legend.position  = "none") 
 dev.off()
 
-summary(aov(Blast ~cluster.refined,data= temp.LUMC))
 
 
-pairwise.t.test(temp.LUMC$Blast, temp.LUMC$cluster.refined,
+
+a <- pairwise.t.test(temp.LUMC$Blast, temp.LUMC$cluster.refined,
                  p.adjust.method = "BH")
+
+a$p.value
+
+writexl::write_xlsx(data.frame(a$p.value), path ="Supplementary Tables/Cell_Type_vs_Blast_ttest.xlsx")
 ```
 
 ```{r include=FALSE}
@@ -823,7 +1116,6 @@ if(saveFigs){
     dev.off()
 }
 ```
-
 
 ### BEAT-AML
 
@@ -928,6 +1220,8 @@ meta.BEAT$FAB <- sub(".*-", "", meta.BEAT$FAB)  %>% substr(1,2)
 # BEAT has healthy samples, filtering those from the matrices
 patients.BEAT <- rownames(meta.BEAT)
 
+
+count.BEAT.healthy <- count.BEAT[,setdiff(colnames(count.BEAT), patients.BEAT)]
 count.BEAT <- count.BEAT[,patients.BEAT]
 meta.BEAT  <- meta.BEAT [patients.BEAT,]
 # mut.BEAT   <- mut.BEAT  [patients.BEAT,]
@@ -956,7 +1250,6 @@ deconv.BEAT <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'labe
                                             markers = NULL, normalize = FALSE, samples = 'Sample',
                                             verbose = F)$Est.prop.weighted
 ```
-
 
 ```{r cache=TRUE, fig.width=16, fig.height=5.5}
 ann.row.BEAT <- as.data.frame(cbind.data.frame(pdiagnoses.BEAT, Blast = meta.BEAT$Blast, Stemness = meta.BEAT$Stemness, FAB = meta.BEAT$FAB, ELN = meta.BEAT$ELN))
@@ -1014,24 +1307,6 @@ if(saveFigs){
 }
 ```
 
-
-```{r}
-summary.table.beat <- meta.BEAT %>% 
-  dplyr::select(Age, Sex, `Primary Diagnosis`, ELN, overal_survival) %>% 
-  gtsummary::tbl_summary(statistic = list(all_continuous() ~ "{mean} ({min}, {max})",
-                                          all_categorical() ~ "{n} / {N} ({p}%)")) 
-  summary.table.beat
-
-```
-
-
-```{r}
-if(saveFigs){
-  gt::gtsave(as_gt(summary.table.beat), file = 'output/BEAT_Summary_Table.pdf')
-}
-```
-
-
 ```{r , fig.height=5}
 temp.BEAT <- cbind(meta.BEAT, Blast.predicted = ann.row.BEAT$Blast.predicted)
 temp.BEAT$status <- ifelse(temp.BEAT$event == "Alive", 0,ifelse(temp.BEAT$event == "Dead", 1, NA))
@@ -1069,7 +1344,6 @@ if(saveFigs){
   dev.off()
 }
 ```
-
 
 ```{r fig.height=5}
 # For assigning samples with cut
@@ -1112,8 +1386,6 @@ if(saveFigs){
 }
 ```
 
-
-
 ```{r alluvial BEAT}
 library(scales)
 
@@ -1127,18 +1399,14 @@ ggplot(aes(axis1 = ELN, axis2 = patient.groups, y = Freq)) +
 plot.beat.alluvial
 ```
 
-
-
-
 ```{r BEAT Forest plot, fig.width=14, fig.height=10}
 pdf("output/BEAT_Alluvial.pdf")
 plot.beat.alluvial
 dev.off()
 ```
 
-
-
 ### TARGET-AML
+
 ```{r TARGET deconvolution, cache=TRUE}
 count.TARGET <- read.csv("data/Studies_Latest/TARGET/TARGET_ht_seq.csv")
 
@@ -1177,6 +1445,7 @@ meta.TARGET[meta.TARGET$primary_diagnosis == "KMT2A-MLLT10", "primary_diagnosis_
 # mut.TARGET <- read.csv("data/Other studies/TARGET/TARGET_mutations_df_3.csv", row.names = 1)
 
 meta.TARGET <- meta.TARGET[!grepl("Healthy", meta.TARGET$primary_diagnosis_refined ),]
+count.TARGET.healthy <- count.TARGET[, setdiff(colnames(count.TARGET), rownames(meta.TARGET))]
 count.TARGET <- count.TARGET[, rownames(meta.TARGET)]
 
 meta.TARGET <- meta.TARGET %>% mutate(Age = Age.at.Diagnosis.in.Days/365, 
@@ -1227,11 +1496,9 @@ deconv.TARGET <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'la
                                             verbose = F)$Est.prop.weighted
 ```
 
-
 ```{r fig.width=15, fig.height=5}
 ann.row.TARGET <- as.data.frame(cbind.data.frame(pdiagnoses.TARGET, 
-                                      Blast.BM = meta.TARGET$Bone.marrow.leukemic.blast.percentage...., 
-                                      Blast.PB = meta.TARGET$Peripheral.blasts...., 
+                                      Blast = meta.TARGET$Bone.marrow.leukemic.blast.percentage...., 
                                       Stemness = meta.TARGET$Stemness, 
                                       FAB = meta.TARGET$FAB,
                                       ELN = meta.TARGET$ELN))
@@ -1281,25 +1548,6 @@ if(saveFigs){
     dev.off()
 }
 ```
-
-
-
-```{r}
-summary.table.target <- meta.TARGET %>% 
-  dplyr::select(Age, Sex, `Primary Diagnosis`, ELN, overal_survival) %>% 
-  gtsummary::tbl_summary(statistic = list(all_continuous() ~ "{mean} ({min}, {max})",
-                                          all_categorical() ~ "{n} / {N} ({p}%)")) 
-  summary.table.target
-
-```
-
-
-```{r}
-if(saveFigs){
-  gt::gtsave(as_gt(summary.table.target), file = 'output/TARGET_Summary_Table.pdf')
-}
-```
-
 
 ```{r , fig.height=5}
 temp.TARGET <- meta.TARGET
@@ -1376,8 +1624,6 @@ if(saveFigs){
 }
 ```
 
-
-
 ```{r alluvial TARGET}
 
 
@@ -1391,19 +1637,14 @@ ggplot(aes(axis1 = ELN, axis2 = patient.groups, y = Freq)) +
 plot.target.alluvial
 ```
 
-
-
-
 ```{r TARGET Alluvial plot, fig.width=14, fig.height=10}
 pdf("output/TARGET_Alluvial.pdf")
 plot.target.alluvial
 dev.off()
 ```
 
-
-
-
 ## LEUCEGENE
+
 ```{r}
 count.LEUCE <- read.csv("data/Other studies/LEUCEGENE/Leucegene_count_matrix.csv", check.names = F)
 
@@ -1507,7 +1748,6 @@ deconv.LEUCE <- music_prop(bulk.eset = T.eset, sc.eset = C.eset, clusters = 'lab
                                             verbose = F)$Est.prop.weighted
 ```
 
-
 ```{r}
 
 
@@ -1557,10 +1797,6 @@ if(saveFigs){
 }
 ```
 
-
-
-
-
 ```{r}
 
 # EDUCATED GUESS: Deconvolution correlates with FAB therefore no survival differences
@@ -1572,7 +1808,8 @@ mut.TCGA <- reshape2::acast(mut.TCGA, Patient ~ Hugo_Symbol)
 meta.TCGA$Order <- 1:nrow(meta.TCGA)
 mut.TCGA <- merge(meta.TCGA[, c("Patient", "Sample", "Order"), drop = F], mut.TCGA, by.x = "Patient", by.y = 0,  all.x = T)
 mut.TCGA <- mut.TCGA[order(mut.TCGA$Order),]
-
+rownames(mut.TCGA) <- mut.TCGA$Sample
+mut.TCGA <- mut.TCGA[,-c(1:3)]
 
 mut.BEAT <- fread("data/Studies_Latest/BEAT-AML/BEAT_mutations.txt")
 mut.BEAT$Patient <- strsplit(mut.BEAT$Tumor_Sample_Barcode, "_", fixed = T) %>% sapply(function(x) x[length(x)])
@@ -1581,6 +1818,9 @@ meta.BEAT$Order <- 1:nrow(meta.BEAT)
 mut.BEAT <- merge(meta.BEAT[,c("Patient", "Sample", "LLS_SampleID", "Order" ), drop = F], mut.BEAT, 
                   by.x = "LLS_SampleID", by.y = 0,  all.x = T)[,-1]
 mut.BEAT <- mut.BEAT[order(mut.BEAT$Order),]
+rownames(mut.BEAT) <- mut.BEAT$Sample
+mut.BEAT <- mut.BEAT[,-c(1:3)]
+
 
 mut.TARGET <- fread("data/Studies_Latest/TARGET/TARGET_mutations.txt")
 mut.TARGET$Patient <- strsplit(mut.TARGET$Tumor_Sample_Barcode, "-", fixed = T) %>% 
@@ -1590,62 +1830,74 @@ mut.TARGET <- reshape2::acast(mut.TARGET, Patient ~ Hugo_Symbol)
 meta.TARGET$Order <- 1:nrow(meta.TARGET)
 mut.TARGET <- merge(meta.TARGET[,c("Patient", "Sample", "Order"), drop = F], mut.TARGET, by.x = "Patient", by.y = 0,  all.x = T)
 mut.TARGET <- mut.TARGET[order(mut.TARGET$Order),]
-
-intersected.mutations <- Reduce(intersect, list(colnames(mut.TCGA), colnames(mut.BEAT), colnames(mut.TARGET)))
-# Remove Patient, Sample and Order
-intersected.mutations <- intersected.mutations[4:length(intersected.mutations)]
+rownames(mut.TARGET) <- mut.TARGET$Sample
+mut.TARGET <- mut.TARGET[,-c(1:3)]
 
 
 # Mutations for LUMC
 mut.LUMC <- as.data.frame(fread("data/Studies_Latest/mutations_oh.csv", drop = 1))
 mut.LUMC <- mut.LUMC %>% filter(grepl("AML.",sample_ID))
 
-y <- lapply(intersected.mutations, function(x){
-  
-  if(x %in% colnames(mut.LUMC)){
-    return(ifelse(rowSums(mut.LUMC[,grep(x, colnames(mut.LUMC)), drop = F]) > 0, 1, 0))
-  }
-  return(rep(NA, nrow(mut.LUMC)))
-}) %>% do.call(cbind, .)
+mut.LUMC$NRAS <- mut.LUMC$NRAS_all
+mut.LUMC$IDH2 <- mut.LUMC$IDH2_all
+mut.LUMC$ASXL1 <- mut.LUMC$ASXL1_all
+mut.LUMC$DNMT3A <- mut.LUMC$DNMT3A_all
+mut.LUMC$IDH1 <- mut.LUMC$IDH1.R132 + mut.LUMC$IDH1.R172
+mut.LUMC$FLT3 <- mut.LUMC$FLT3.TKD + mut.LUMC$FLT3.ITD + mut.LUMC$FLT3
+mut.LUMC$KIT <- mut.LUMC$KIT_all
 
-rownames(y) <- mut.LUMC$sample_ID
-colnames(y) <- intersected.mutations
-mut.LUMC <- as.data.frame(y)
+mut.LUMC <- as.data.frame(mut.LUMC)
+
+rownames(mut.LUMC) <- mut.LUMC$sample_ID
+mut.LUMC <- mut.LUMC[,-1]
+
 
 # Mutations for LEUCE
 mut.LEUCE <- meta.LEUCE[,c("IDH1.R132.mutation", "NPM1.mutation", "FLT3.ITD.km.curated")]
 colnames(mut.LEUCE) <- c("IDH1", "NPM1", "FLT3")
-mut.LEUCE <- mut.LEUCE %>% filter(grepl("^X",sample_ID))
+# mut.LEUCE <- mut.LEUCE %>% filter(grepl("^X",sample_ID))
 
+mut.train <- plyr::rbind.fill(
+  mut.TCGA,
+  mut.LUMC,
+  mut.BEAT,
+  mut.TARGET,
+  mut.LEUCE
+)
 
-y <- lapply(intersected.mutations, function(x){
+rownames(mut.train) <- c(rownames(mut.TCGA), 
+                         rownames(mut.LUMC), 
+                         rownames(mut.BEAT),
+                         rownames(mut.TARGET),
+                         rownames(mut.LEUCE))
 
-  if(x %in% colnames(mut.LEUCE)){
-    return(mut.LEUCE[,grep(x, colnames(mut.LEUCE)), drop = F])
-  }
-  return(rep(NA, nrow(mut.LEUCE)))
-}) %>% do.call(cbind, .)
+selected.mutations <- colSds(as.matrix(mut.train), na.rm = T) > 0
+selected.mutations[is.na(selected.mutations)] <- FALSE
 
-rownames(y) <- mut.LEUCE$sample_ID
-colnames(y) <- intersected.mutations
-mut.LEUCE <- as.data.frame(y)
+mut.train <- mut.train[, selected.mutations & (colSums(mut.train, na.rm = T) > 10)]
 
+mut.train <- mut.train[,!grepl(".", colnames(mut.train), fixed = T) & !grepl("_all", colnames(mut.train), fixed = T)]
+
+common.mutations <- colnames(mut.train)
 ```
 
-
 ### MERGE ALL STUDIES
+
 ```{r}
 # merge patient profiles from TCGA and BEAT
 common.features <- c("Sample", "Other.Sample", "Patient","Study","Age", "Blast", "Sex","Origin","Primary Diagnosis", 
                      "ELN", "FAB","Status", "overal_survival", "Stemness", "APS", "Recurrence")
 
 meta.train <- plyr::rbind.fill(
-  cbind(meta.TCGA[,common.features],cluster = clusters.TCGA, mut.TCGA[, intersected.mutations]),
-  cbind(meta.LUMC[,common.features],cluster = clusters.LUMC, mut.LUMC[, intersected.mutations]),
-  cbind(meta.BEAT[,common.features],cluster = clusters.BEAT, mut.BEAT[, intersected.mutations]),
-  cbind(meta.TARGET[,common.features],cluster = clusters.TARGET, mut.TARGET[, intersected.mutations]),
+  cbind(meta.TCGA[,common.features],cluster = clusters.TCGA),
+  cbind(meta.LUMC[,common.features],cluster = clusters.LUMC),
+  cbind(meta.BEAT[,common.features],cluster = clusters.BEAT),
+  cbind(meta.TARGET[,common.features],cluster = clusters.TARGET),
   cbind(meta.LEUCE[,common.features],cluster = clusters.LEUCE)
 )
+# merge mutation data with meta
+meta.train <- cbind(meta.train, mut.train)
+rownames(meta.train) <- NULL
 
 pdiagnoses.train <- stats::model.matrix(~ 0 + meta.train$`Primary Diagnosis`)
 colnames(pdiagnoses.train) <- sub(pattern = "meta.train\\$`Primary Diagnosis`", 
@@ -1671,6 +1923,7 @@ breaksList = seq(0,1, by = .001)
 pheatmap.colors <- colorRampPalette((brewer.pal(n = 7, name = "Blues")))(length(breaksList))
 
 age.color <- colorRampPalette((brewer.pal(n = 7, name = "Reds")))(length(seq(0,100, by = 1)))
+
 
 train.clusters <- meta.train[new.order.train,"cluster"]
 
@@ -1700,16 +1953,14 @@ pmap.train <- pheatmap(t(deconv.train [new.order.train, intersect(cell.type.orde
 pmap.train
 ```
 
-
 ```{r}
 if(saveFigs){
   
-  pdf("output/ALL_merged_deconv.pdf", width = 20, height = 6)
+  pdf("output/ALL_merged_deconv.pdf", width = 20, height = 7)
   pmap.train
   dev.off()
 }
 ```
-
 
 ```{r}
 library(gtsummary)
@@ -1730,9 +1981,8 @@ summary.table.train %>% as_gt() %>%
   gt::gtsave(filename = "output/Patient_Characteristics.pdf")
 ```
 
-
-
 ### DECONVOLUTION ON REDUCED DIMENTIONS
+
 ```{r}
 
 noise <- matrix(runif(prod(dim(deconv.train)), min = -1e-6, max = 1e-6), nrow = nrow(deconv.train))
@@ -1745,74 +1995,92 @@ umap <- umap::umap(deconv.train)
 
 
 plot.df <- data.frame(UMAP = umap$layout, TSNE = tsne$Y, deconv.train, meta.train, check.names = F)
-plot.df$`Primary Diagnosis` <- gsub("Acute myeloid leukemia", "", plot.df$`Primary Diagnosis`)
+# plot.df$`Primary Diagnosis` <- gsub("Acute myeloid leukemia", "", plot.df$`Primary Diagnosis`)
 
-pdf("output/UMAP_ALL_patients.pdf")
+fontSize <- 12
+
+pdf("output/UMAP_ALL_patients_Assignment.pdf", useDingbats = F)
 
 plot.celltype <- ggplot(plot.df[sample(1:nrow(plot.df)),], aes(UMAP.1, UMAP.2, color = cluster)) +
   geom_point(size = 2) +
-  theme_light() + 
-  coord_fixed(ratio = 1) + 
+  theme_light(base_size = fontSize) + 
+  coord_fixed(ratio = 1) + labs(color = "Assignment") +
   scale_color_manual(values = cell.type.colors[!names(cell.type.colors) %in% c("Others")])
 plot.celltype
+dev.off()
 
+pdf("output/UMAP_ALL_patients_Sex.pdf")
 plot.sex <- ggplot(plot.df[sample(1:nrow(plot.df)),], aes(UMAP.1, UMAP.2, color = Sex)) +
   geom_point(size = 2) +
-  theme_light() + 
+  theme_light(base_size = fontSize) + 
   coord_fixed(ratio = 1) + 
   scale_color_manual(values = ann.colors$Sex)
 plot.sex
+dev.off()
 
+pdf("output/UMAP_ALL_patients_Stemness.pdf")
 plot.stemness <- ggplot(plot.df[sample(1:nrow(plot.df)),], aes(UMAP.1, UMAP.2, color = Stemness)) +
   geom_point(size = 2) +
-  theme_light() + 
+  theme_light(base_size = fontSize) + 
   coord_fixed(ratio = 1) + 
   scale_color_viridis_c(na.value = NA)
 plot.stemness
+dev.off()
 
+pdf("output/UMAP_ALL_patients_APS.pdf")
 plot.APS <- ggplot(plot.df[sample(1:nrow(plot.df)),], aes(UMAP.1, UMAP.2, color = APS)) +
   geom_point(size = 2) +
-  theme_light() + 
+  theme_light(base_size = fontSize) + 
   coord_fixed(ratio = 1) + 
   scale_color_viridis_c(option = "B", na.value = NA)
 plot.APS
+dev.off()
 
+pdf("output/UMAP_ALL_patients_Blast.pdf")
 plot.Blast <- ggplot(plot.df[sample(1:nrow(plot.df)),], aes(UMAP.1, UMAP.2, color = Blast)) +
   geom_point(size = 2) +
-  theme_light() + 
+  theme_light(base_size = fontSize) + 
   coord_fixed(ratio = 1) + 
   scale_color_viridis_c(option = "D", na.value = NA)
 plot.Blast
+dev.off()
 
+pdf("output/UMAP_ALL_patients_Study.pdf")
 plot.study <- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2, color = Study)) +
   geom_point(size = 2) +
-  theme_light() + 
+  theme_light(base_size = fontSize) + 
   coord_fixed(ratio = 1) + scale_color_manual(values = ann.colors$Study)
 plot.study
+dev.off()
 
+pdf("output/UMAP_ALL_patients_Age.pdf")
 plot.age<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2, color = Age)) +
   geom_point(size = 2) +
-  theme_light() + 
+  theme_light(base_size = fontSize) + 
   coord_fixed(ratio = 1) + scale_color_gradient(low = "lightblue", high = "darkblue")
 plot.age
+dev.off()
 
+pdf("output/UMAP_ALL_patients_FAB.pdf")
 plot.fab <- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2)) +
   geom_point(size = 2, data = plot.df[is.na(plot.df$FAB),], color = "gray") + 
   geom_point(size = 2, data = plot.df[!is.na(plot.df$FAB),], aes(color = FAB)) +
-  theme_light() + 
+  theme_light(base_size = fontSize) + 
   coord_fixed(ratio = 1) + 
   scale_color_manual(values = ann.colors$FAB)
 plot.fab
+dev.off()
 
+pdf("output/UMAP_ALL_patients_ELN.pdf")
 plot.eln<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2)) +
   geom_point(size = 2, data = plot.df[is.na(plot.df$ELN),], color = "gray") + 
   geom_point(size = 2, data = plot.df[!is.na(plot.df$ELN),], aes(color = ELN)) +
-  theme_light() + 
+  theme_light(base_size = fontSize) + 
   coord_fixed(ratio = 1) + scale_color_manual(values = ann.colors$ELN)
 plot.eln
+dev.off()
 
-
-
+pdf("output/UMAP_ALL_patients_PrimaryDiagnosis.pdf")
 plot.primary<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2)) +
   geom_point(data=dplyr::select(plot.df[sample(1:nrow(plot.df)),], -`Primary Diagnosis`), color = "gray") + 
   geom_point(size=1, pch=21, aes(fill=`Primary Diagnosis`)) +
@@ -1820,23 +2088,19 @@ plot.primary<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2)) +
   scale_fill_manual(values = DiscretePalette(20)) + 
   theme.gg + theme(legend.position = "none")
 plot.primary
+dev.off
 
 
-
-ggarrange(plot.celltype, plot.study, plot.sex, plot.age, plot.fab , plot.eln, legend = F)
-dev.off()
-
-pdf("output/UMAP_ALL_patients_celltypes.pdf")
 lapply(cell.type.order, function(x){
   p1 <- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2, color = .data[[x]])) +
   geom_point(size = 2) +
-  theme_light() + 
+  theme_bw(base_size = fontSize) +
   coord_fixed(ratio = 1) + 
-  scale_color_viridis_c(option = "C", na.value = NA)
-  p1
+  ggtitle(x) +  theme(legend.position="bottom") + 
+  scale_color_viridis_c(option = "C", na.value = NA, breaks = c(0,1)) 
+  ggsave(paste0("output/UMAP_ALL_patients_celltypes_", x,".pdf"), plot = p1, width = 6, height = 6)
 })
 
-dev.off()
 ```
 
 ```{r Pileup FAB}
@@ -1920,8 +2184,6 @@ dev.off()
 lm(Perc ~ Stemness.categorical, data = df.stacked.stemness)
 ```
 
-
-
 ```{r UMAP mutations}
 plot.df[intersected.mutations] <- lapply(plot.df[intersected.mutations] , 
                                          function(x){factor(ifelse(x > 0, "Yes", "No"), levels = c("Yes", "No"))})
@@ -1949,12 +2211,20 @@ lapply(c("NPM1", "FLT3", "IDH2", "WT1", "TET2", "JAK2", "MYC", "NRAS"), function
 dev.off()
 ```
 
-### DRUG RESPONSE GRAPHS
+```{r Mutation vs Cell Type changes}
 
+
+plot.df[c(cell.type.order,"NPM1")] %>% filter_all(~ !is.na(.)) %>% melt() %>% 
+ggplot(aes(variable, value, fill = NPM1)) + geom_boxplot(outlier.shape = 1) + theme.gg + 
+  stat_compare_means(aes(label = ..p.signif..),method = "wilcox.test", hide.ns = T) + 
+  scale_x_discrete(guide = guide_axis(angle = 90))
+```
+
+### DRUG RESPONSE GRAPHS
 
 ```{r All spesific drug responses, message=FALSE}
 meta.BEAT.drug <- readxl::read_excel("data/Studies_Latest/BEAT-AML/BEAT_Paper_meta.xlsx", sheet = "Table S10-Drug Responses")
-meta.BEAT.drug <- split(meta.BEAT.drug %>% select(-inhibitor), meta.BEAT.drug$inhibitor)
+meta.BEAT.drug <- split(meta.BEAT.drug %>% dplyr::select(-inhibitor), meta.BEAT.drug$inhibitor)
 
 pdf("output/UMAP_Drug_response_AUC.pdf")
 lapply(names(meta.BEAT.drug), function(drug.name){
@@ -1967,8 +2237,8 @@ lapply(names(meta.BEAT.drug), function(drug.name){
   plot.drug<- ggplot(temp.plot[sample(1:nrow(temp.plot)),] , aes(UMAP.1, UMAP.2, color = auc)) +
     geom_point(size = 2, data = temp.plot[ is.na(temp.plot$auc),], color = "gray") + 
     geom_point(size = 2, data = temp.plot[!is.na(temp.plot$auc),]) +
-    theme.gg + ggtitle(drug.name) + 
-    coord_fixed(ratio = 1) + 
+    theme.gg + ggtitle(drug.name) +
+    coord_fixed(ratio = 1) + labs(color = "AUC") +
     scale_color_viridis_c(option = "G", direction = -1)
     
   temp.plot <- temp.plot %>% mutate(cluster.refined = ifelse(cluster %in% c("CD14 Mono", "HSC", "EMP", "T Cells", "GMP"), cluster, "Others"))
@@ -1989,6 +2259,29 @@ lapply(names(meta.BEAT.drug), function(drug.name){
 }) 
 
 dev.off()
+
+
+
+# anova one way pvals
+owa.p <- lapply(names(meta.BEAT.drug), function(drug.name){
+  
+  drug.df <- meta.BEAT.drug[[drug.name]]
+  temp.plot <- merge(plot.df[,c("Sample","Other.Sample", "UMAP.1", "UMAP.2", "cluster", "NPM1")] , 
+                     drug.df, by.x = "Other.Sample", by.y = "lab_id", all.x = T)
+  
+    
+  temp.plot <- temp.plot %>% mutate(cluster.refined = ifelse(cluster %in% c("CD14 Mono", "HSC", "EMP", "T Cells", "GMP"), cluster, "Others"))
+  
+  p = summary(aov(auc ~ cluster.refined, temp.plot))[[1]]$`Pr(>F)`[1]
+  return(cbind(Drug = drug.name, p = sprintf("%.2e", p ), logp = -log(p)))
+  
+}) %>% do.call(rbind, .) %>% as.data.frame
+
+owa.p$logp <- as.numeric(owa.p$logp)
+owa.p<- owa.p[order(-owa.p$logp),]
+owa.p$adj.p <- p.adjust(owa.p$p, method = "BH")
+
+writexl::write_xlsx(owa.p, "Supplementary Tables/oneway_anova_Drugs_vs_Cell_Type.xlsx")
 ```
 
 ```{r}
@@ -2001,40 +2294,60 @@ lapply(names(meta.BEAT.drug), function(drug.name){
   temp.plot <- merge(plot.df[,c("Sample","Other.Sample", "UMAP.1", "UMAP.2", "cluster", "NPM1")], 
                      drug.df, by.x = "Other.Sample", by.y = "lab_id", all.x = T)
   
-  
-  plot.drug<- ggplot(temp.plot[sample(1:nrow(temp.plot)),] , aes(UMAP.1, UMAP.2, color = auc)) +
-    geom_point(size = 2, data = temp.plot[is.na(temp.plot$auc),], color = "gray") + 
-    geom_point(size = 2, data = temp.plot[ifelse(!is.na(temp.plot$auc),temp.plot$NPM1 == "Yes",FALSE), ]) +
-    theme.gg + ggtitle(drug.name) + 
-    coord_fixed(ratio = 1) + 
-    scale_color_viridis_c(option = "G", direction = -1)
-    
+  temp.plot <- temp.plot %>% mutate(AUC.norm = normalize(auc, na.rm = T))
   temp.plot <- temp.plot %>% mutate(cluster.refined = ifelse(cluster %in% c("CD14 Mono", "HSC", "EMP", "T Cells", "GMP"), cluster, "Others"))
   
-  plot.drug.cluster<- ggplot(temp.plot %>% filter(NPM1 == "Yes") , aes(cluster.refined, auc, fill = cluster.refined)) +
+  plot.drug<- ggplot(temp.plot[sample(1:nrow(temp.plot)),] , aes(UMAP.1, UMAP.2, color = AUC.norm)) +
+    geom_point(size = 2, data = temp.plot[is.na(temp.plot$auc),], color = "gray") + 
+    geom_point(size = 2, data = temp.plot[ifelse(!is.na(temp.plot$auc),temp.plot$NPM1 > 0,FALSE), ]) +
+    theme.gg + ggtitle(drug.name) + 
+    coord_fixed(ratio = 1) + labs(color = "AUC") + 
+    scale_color_viridis_c(option = "G", direction = -1)
+    
+  
+  plot.drug.cluster<- ggplot(temp.plot %>% filter(NPM1 > 0) , aes(cluster.refined, AUC.norm, fill = cluster.refined)) +
     geom_boxplot(outlier.shape = NA) + 
     geom_jitter(size = 1, width = 0.1) +
     coord_flip() + 
-    theme.gg + ggtitle(drug.name) + 
+    theme.gg + ggtitle(drug.name) + labs(color = "AUC") +
     scale_fill_manual(values = cell.type.colors) + 
     theme(legend.position = "none") + xlab("")
   
   p.val <- summary(aov(auc ~ cluster.refined, temp.plot))[[1]]$`Pr(>F)`[1]
   
-  plot.drug | plot.drug.cluster + labs(caption = sprintf('anova p-value: %.5f', p.val))
+  plot.drug | plot.drug.cluster + labs(caption = sprintf('anova p-value: %.5f', p.val)) 
   
 }) 
 
 dev.off()
+
+
+# one way anova
+owa.p <- lapply(names(meta.BEAT.drug), function(drug.name){
+  
+  
+
+  drug.df <- meta.BEAT.drug[[drug.name]]
+  temp.plot <- merge(plot.df[,c("Sample","Other.Sample", "UMAP.1", "UMAP.2", "cluster", "NPM1")], 
+                     drug.df, by.x = "Other.Sample", by.y = "lab_id", all.x = T)
+  
+  temp.plot <- temp.plot %>% mutate(AUC.norm = normalize(auc, na.rm = T))
+  temp.plot <- temp.plot %>% mutate(cluster.refined = ifelse(cluster %in% c("CD14 Mono", "HSC", "EMP", "T Cells", "GMP"), cluster, "Others"))
+  
+  p = summary(aov(auc ~ cluster.refined, temp.plot %>% filter(NPM1 > 0)))[[1]]$`Pr(>F)`[1]
+  return(cbind(Drug = drug.name, p = sprintf("%.2e", p ), logp = -log(p)))
+  
+}) %>% do.call(rbind, .) %>% as.data.frame
+
+owa.p$logp <- as.numeric(owa.p$logp)
+owa.p<- owa.p[order(-owa.p$logp),]
+owa.p$adj.p <- p.adjust(owa.p$p, method = "BH")
+
+writexl::write_xlsx(owa.p, "Supplementary Tables/oneway_anova_Drugs_vs_Cell_Type_NPM1.xlsx")
 ```
-
-# Random Forest Drug Prediction
-```{r}
-
-```
-
 
 # Random Forest Survival
+
 ```{r}
 library(randomForestSRC)
 set.seed(5)
@@ -2054,10 +2367,13 @@ for(x in c("TCGA", "BEAT", "TARGET")){
 
 
   model.rfsrc<- rfsrc(Surv(overal_survival,  Status) ~ . , data=df.rfsrc, ntree = 1000, importance = T)
-  
+
   plot(model.rfsrc)
   plot.df$RFSRC.pred <- predict(model.rfsrc, newdata = plot.df[, cell.type.order, drop = F])$predicted
   
+  par(pty="s", mfrow = c(1,1))
+  plot(scale(plot.df[plot.df$Study == x,]$Stemness, center = T), scale(plot.df[plot.df$Study == x,]$RFSRC.pred, center = T), 
+       pch = 16, ylab = "RF Score", xlab = "Stemness Score", xlim = c(-3,3), ylim = c(-3,3))
   
   new.df <- plot.df[plot.df$Study == x,]
   model <- survfit(Surv(overal_survival,  Status) ~ RFSRC.pred > median(RFSRC.pred, na.rm = T), 
@@ -2084,9 +2400,8 @@ dev.off()
 
 ```
 
-
 ```{r Predict HSC/EMP}
-ggsurvplot(survfit(Surv(overal_survival,  Status) ~ APS > median(APS) , data=plot.df %>% filter(NPM1 =="Yes")), 
+ggsurvplot(survfit(Surv(overal_survival,  Status) ~ APS > median(APS, na.rm = T) , data=plot.df %>% filter(NPM1 ==1)), 
            pval = T,conf.int = F, risk.table = T)
 ```
 
@@ -2153,7 +2468,6 @@ plot.ICS <- ggplot(temp[sample(1:nrow(temp)),] , aes(UMAP.1, UMAP.2, color = APS
 plot.ICS
 ```
 
-
 ```{r Predicting APS scores}
 temp <- plot.df
 
@@ -2198,34 +2512,6 @@ ggsurvplot(survfit(Surv(overal_survival,  Status) ~ APS.preds.lm > median(APS.pr
            pval = T,conf.int = F, risk.table = F)
 
 ```
-
-```{r}
-
-df.CTC <- plot.df[,c("HSC", "GMP", "T Cells")]
-df.CTC$`T Cells` <- ifelse(df.CTC$`T Cells` > 0, 1, 0)
-
-
-# (−1.7016 × GMP-like) + (0.2015 × HSC-like) + (−0.293 × T)
-CTC.coefs <- c(0.2015, -1.7016, -0.293)
-
-plot.df$CTC <- rowSums(sweep(df.CTC, 2, CTC.coefs, FUN = "*"))
-
-plot.CTC<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(UMAP.1, UMAP.2, color = CTC)) +
-  geom_point(size = 2) +
-  theme_light() + 
-  coord_fixed(ratio = 1) + 
-  scale_color_viridis_c(option = "B")
-  
-plot.CTC
-
-ggsurvplot(survfit(Surv(overal_survival,  Status) ~ CTC > median(CTC) , data=plot.df[plot.df$Study == "BEAT" & !duplicated(plot.df$Patient) & plot.df$Recurrence == "No",]), pval = T,conf.int = F, risk.table = T)
-
-ggsurvplot(survfit(Surv(overal_survival,  Status) ~ CTC > median(CTC) , data=plot.df[plot.df$Study == "TCGA",]), pval = T,conf.int = F, risk.table = T)
-
-
-ggsurvplot(survfit(Surv(overal_survival,  Status) ~ CTC > median(CTC) , data=plot.df[plot.df$Study == "TARGET",]), pval = T,conf.int = F, risk.table = T)
-```
-
 
 ```{r}
 idx <- intersect(intersect(which(complete.cases(plot.df[, c("overal_survival", "Status")])), 
@@ -2278,8 +2564,6 @@ ggplot(temp, aes(UMAP.1, UMAP.2, color = lasso.scores)) +
 
 ```
 
-
-
 ```{r NPM1}
 
 
@@ -2305,67 +2589,6 @@ ggsurvplot(model.npm1,
 ggplot(data=df.npm1, aes(Sex, Age)) +geom_violin() + geom_boxplot(width = 0.2) + geom_jitter(width = 0.1) + theme.gg + stat_compare_means(method = "t.test")
 
 ```
-
-
-
-```{r}
-
-pdf("output/TSNE_ALL_patients.pdf")
-plot.celltype <- ggplot(plot.df, aes(TSNE.1, TSNE.2, color = cluster)) +
-  geom_point(size = 2) +
-  theme_light() + 
-  coord_fixed(ratio = 1) + 
-  scale_color_manual(values = cell.type.colors[!names(cell.type.colors) %in% c("Others")])
-plot.celltype
-
-plot.sex <- ggplot(plot.df, aes(TSNE.1, TSNE.2, color = Sex)) +
-  geom_point(size = 2) +
-  theme_light() + 
-  coord_fixed(ratio = 1) + 
-  scale_color_manual(values = ann.colors$Sex)
-plot.sex
-
-
-plot.study <- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(TSNE.1, TSNE.2, color = Study)) +
-  geom_point(size = 2) +
-  theme_light() + 
-  coord_fixed(ratio = 1) + scale_color_manual(values = ann.colors$Study)
-plot.study
-
-plot.age<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(TSNE.1, TSNE.2, color = Age)) +
-  geom_point(size = 2) +
-  theme_light() + 
-  coord_fixed(ratio = 1) + scale_color_gradient(low = "lightblue", high = "darkblue")
-plot.age
-
-plot.fab<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(TSNE.1, TSNE.2, color = FAB)) +
-  geom_point(size = 2) +
-  theme_light() + 
-  coord_fixed(ratio = 1) + scale_color_manual(values = ann.colors$FAB)
-plot.fab
-
-plot.eln<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(TSNE.1, TSNE.2, color = ELN)) +
-  geom_point(size = 2) +
-  theme_light() + 
-  coord_fixed(ratio = 1) + scale_color_manual(values = ann.colors$ELN)
-plot.eln
-
-plot.primary<- ggplot(plot.df[sample(1:nrow(plot.df)),] , aes(TSNE.1, TSNE.2)) +
-  geom_point(data=select(plot.df[sample(1:nrow(plot.df)),], -`Primary Diagnosis`), color = "gray") + 
-  geom_point(size=1, pch=21, aes(fill=`Primary Diagnosis`)) +
-  ggforce::facet_wrap_paginate(~`Primary Diagnosis`) + 
-  scale_fill_manual(values = DiscretePalette(20)) + theme(legend.position = "none")
-plot.primary
-
-ggarrange(plot.celltype, plot.study, plot.sex, plot.age, plot.fab , plot.eln, legend = F)
-
-dev.off()
-```
-
-
-
-
-
 
 ```{r}
 # redefine groups <15 patients as 'Others'
@@ -2414,25 +2637,467 @@ lapply(colnames(deconv.train), FUN = function(y) plotPerc(x=y))
 dev.off()
 ```
 
-
-
-
-
 ```{r Marieke Stuff}
 
-df.NPM1 <- deconv.LUMC[rownames(meta.train[meta.train$Study == "LUMC" & meta.train$NPM1 == 1,]),]
+# df.NPM1 <- deconv.LUMC[rownames(meta.train[meta.train$Study == "LUMC" & meta.train$NPM1 == 1,]),]
+# 
+# clusters.NPM1 <- apply(df.NPM1, 1, function(x){names(x)[which(x == max(x))]})
+# new.order.NPM1 <- patientOrder(df.NPM1, clusters.NPM1, cell.type.order)
+# 
+# df.NPM1 <- df.NPM1 %>% melt() %>% as.data.frame()
+# df.NPM1$Var1 <- factor(df.NPM1$Var1, levels = rev(new.order.NPM1))
+# 
+# pdf("output/NPM1_LUMC_IC.pdf")
+#  df.NPM1 %>% ggplot(aes(Var1, value * 100, fill = Var2)) + geom_bar(stat = "identity") + theme.gg + scale_fill_manual(values = cell.type.colors[1:22]) + coord_flip() + ylab("Cell Type %") + xlab("") + labs(fill = "Cell Types") + ggtitle("Immune compositions of NPM1 samples")
+#  dev.off()
 
-clusters.NPM1 <- apply(df.NPM1, 1, function(x){names(x)[which(x == max(x))]})
-new.order.NPM1 <- patientOrder(df.NPM1, clusters.NPM1, cell.type.order)
+```
 
-df.NPM1 <- df.NPM1 %>% melt() %>% as.data.frame()
-df.NPM1$Var1 <- factor(df.NPM1$Var1, levels = rev(new.order.NPM1))
+```{r}
+# Can we predict how a patient will respond to a specific drug 
+# given his/her immune profile?
+meta.BEAT.drug <- readxl::read_excel("data/Studies_Latest/BEAT-AML/BEAT_Paper_meta.xlsx", sheet = "Table S10-Drug Responses")
 
-pdf("output/NPM1_LUMC_IC.pdf")
- df.NPM1 %>% ggplot(aes(Var1, value * 100, fill = Var2)) + geom_bar(stat = "identity") + theme.gg + scale_fill_manual(values = cell.type.colors[1:22]) + coord_flip() + ylab("Cell Type %") + xlab("") + labs(fill = "Cell Types") + ggtitle("Immune compositions of NPM1 samples")
- dev.off()
+temp.plot <- merge(plot.df[,c("Sample","Other.Sample")] , 
+                   meta.BEAT.drug, by.x = "Other.Sample", by.y = "lab_id", all.x = T)
+
+temp.plot <- temp.plot[!is.na(temp.plot$auc) & temp.plot$Sample %in% rownames(deconv.BEAT),]
+
+# D_ij: samples vs drugs (Patients' drug responses)
+D <- reshape2::acast(Sample ~ inhibitor,value.var = 'auc' ,data = temp.plot)
+
+normalize <- function(x, ...) {
+    return((x - min(x, ...)) /(max(x, ...) - min(x, ...)))
+}
+
+D <- apply(D, 2, function(x) normalize(x, na.rm = T))
+
+# S_ij: samples vs cell types
+S <- deconv.BEAT[rownames(D),]
+
+
+# as a dummy variable
+predictedRes <- D
+
+# # over each drug
+# for (k in 1:ncol(D)){
+#   
+#   colnames(D)[k]
+#   # loocv 
+#   for (i in 1:nrow(D)){
+#     cat("\n", i)
+#     Xtest <- S[i,,drop=F]
+#     ytest <- D[i,k]    
+#     
+#     if(is.na(ytest)){
+#       predictedRes[i,k] <- NA
+#     } else{
+      # Xtrain <- S[-i,]
+      # ytrain <- D[-i,k]
+      # 
+      # idx <- !is.na(ytrain)
+      # 
+      # Xtrain <- Xtrain[idx,]
+      # ytrain <- ytrain[idx]
+# 
+#       predictedRes[i,k] <- predict(randomForest::randomForest(x = Xtrain, y=ytrain), newdata = Xtest)
+#     }
+#     
+#     
+#   }
+# }
+
+load("output/DrugResponsePreds.RDS")
+
+writexl::write_xlsx(as.data.frame(cbind(Sample = rownames(D),D)), "Supplementary Tables/Normalized_Drug_Values.xlsx")
+writexl::write_xlsx(as.data.frame(cbind(Sample =rownames(predictedRes),predictedRes)), "Supplementary Tables/Drug_Predictions.xlsx")
+writexl::write_xlsx(predCor, "Supplementary Tables/DrugPredictionCorrelations.xlsx")
+
+# dummy var
+predCor <- D[1,]
+# 
+# pdf("output/Drug_Response_Prediction_RF_LOOCV_Scatter_Primary.pdf")
+# formula <- y ~ x
+# for(k in 1:ncol(D)){
+#   
+#   temp <- merge(meta.train, cbind(D[,k], predictedRes[,k]), by.x = "Sample", by.y = 0)
+#   
+#   predCor[k] <- cor(temp$V1,temp$V2, use="complete.obs", method = "spearman")
+#   
+#   p <- ggplot(temp, aes(V1, V2, color = `Primary Diagnosis`)) + geom_point() + 
+#     theme.gg + xlim(c(0,1)) + ylim(c(0,1)) + coord_fixed() + ggtitle(colnames(D)[k]) + 
+#     annotate(geom="text", x=0.15, y=0.95, parse = T, label=sprintf("~ rho == %.3f", predCor[k])) +
+#     scale_color_manual(values = DiscretePalette(20)) + xlab("AUC") + ylab("Predicted AUC")
+#   
+#   print(p)
+# }
+# dev.off()
+
+temp <- merge(meta.train, cbind(D[,"Venetoclax"], predictedRes[,"Venetoclax"]), by.x = "Sample", by.y = 0)
+corr <- cor(temp$V1,temp$V2, use="complete.obs", method = "spearman")
+
+
+temp$`Primary Diagnosis` <- stringr::str_wrap(temp$`Primary Diagnosis`, width = 20)
+temp <- temp %>% filter(!is.na(V2))%>% add_count(`Primary Diagnosis`)
+
+pdf("output/Venetoclax_Response_Primary_Diagnosis.pdf", width = 9, height = 9)
+formula <- y ~ x
+ggplot(temp, aes(V1, V2)) + 
+  geom_point(data=dplyr::select(temp, -`Primary Diagnosis`), color = "gray") + 
+  geom_point(size=3,pch=21, aes(fill=`Primary Diagnosis`)) + 
+  theme.gg + xlim(c(0,1)) + ylim(c(0,1)) + ggtitle("") + 
+  geom_smooth(data = subset(temp, n>5), method = "lm", se = F, size =0.5, color = "black")+ 
+  stat_poly_eq(aes(label = ifelse(n > 5, paste(..rr.label.., ..p.value.label.., sep = "~~~"), "")), 
+               label.x.npc = "right", label.y.npc = 0.95,
+               formula = formula, parse = TRUE, size = 4 ) +
+  scale_color_manual(values = DiscretePalette(20)) + xlab("Normalized AUC") + ylab("Predicted AUC") + 
+  facet_wrap(~ `Primary Diagnosis`) + theme_bw(base_size = 12) +  theme(legend.position = "none")
+dev.off()
+
+
+pdf("output/Venetoclax_Response_Assignment.pdf", width = 8, height = 8)
+ggplot(temp, aes(V1, V2)) + 
+  geom_point(size=2, aes(color=cluster)) + coord_fixed() +
+  theme.gg + xlim(c(0,1)) + ylim(c(0,1)) + ggtitle("Venetoclax") +
+  scale_color_manual(values =cell.type.colors[1:22]) + xlab("AUC") + ylab("Predicted AUC") + 
+  theme(legend.position = "bottom") + labs(color = "Assignment") + ggtitle("")
+dev.off()
+
+
+
+
+
+pdf("output/Drug_Response_Prediction_RF_LOOCV_Scatter.pdf")
+formula <- y ~ x
+for(k in 1:ncol(D)){
+  
+  temp <- merge(meta.train, cbind(D[,k], predictedRes[,k]), by.x = "Sample", by.y = 0)
+  
+  predCor[k] <- cor(temp$V1,temp$V2, use="complete.obs", method = "spearman")
+  
+  p <- ggplot(temp, aes(V1, V2)) + geom_point(size = 2) + 
+    xlim(c(0,1)) + ylim(c(0,1)) + coord_fixed() + ggtitle(colnames(D)[k]) + 
+    annotate(geom="text", x=0.15, y=0.95, parse = T, size = 5, label=sprintf("~ rho == %.3f", predCor[k])) +
+    xlab("Normalized AUC") + ylab("Predicted AUC") + theme_bw(base_size = 16)
+  
+  print(p)
+}
+dev.off()
+
+
+predCor <- tibble::enframe(predCor)
+
+pdf("output/Drug_Response_Prediction_RF_LOOCV_Rho.pdf", width = 10, height = 5)
+predCor %>% 
+  ggplot(aes(reorder(name, -value), value)) + 
+  geom_bar(stat = "identity") + 
+  theme_bw(base_size =  8) + 
+   xlab("") + scale_x_discrete(guide = guide_axis(angle = 90)) + 
+  ylim(c(-1, 1)) + ylab("Spearman's Rho") + 
+  labs(subtitle = "Leave one out cross validation within each drug")
+dev.off()
+```
+
+```{r BEAT Venetoclax Response vs CD14 Mono %}
+meta.train.BEAT <- plot.df[plot.df$Study == "BEAT",]
+
+
+contrast.BEAT<- ifelse(meta.train.BEAT$cluster == "CD14 Mono", "CD14Mono", "Others")
+
+res.BEAT <- cinaR::cinaR(matrix = cbind(rownames(count.BEAT[,meta.train.BEAT$Sample]), count.BEAT[,meta.train.BEAT$Sample]), 
+                              contrasts = contrast.BEAT, 
+                              experiment.type = "RNA-Seq")
+
+
+cp.BEAT <- res.BEAT$DA.results$cp
+
+df.BCL2 <- data.frame(BCL2 = cp.BEAT["BCL2",], meta.train.BEAT)
+
+drug.res.BCL2 <- temp.plot [temp.plot$inhibitor == "Venetoclax" & temp.plot$Sample %in% meta.train.BEAT$Sample, ]
+
+df.BCL2 <- merge(df.BCL2, drug.res.BCL2, by = "Sample")
+df.BCL2 <- merge(df.BCL2, cbind(Sample = rownames(predictedRes),predictedRes), by = "Sample")
+
+pdf("output/Venetoclax_BCL2_vs_AUC.pdf", width = 8, height = 6)
+df.BCL2 %>% ggplot(aes(normalize(auc), BCL2, color = CD14.Mono)) + geom_point(size = 3)  + xlab("Venetoclax Resistance\n(Normalized AUC)") + ylab("BCL2 Expression\n(cpm)")+ scale_color_gradient(low = "gray" ,high = "#b00000") + labs(color = "CD14 Mono") + theme_bw(base_size = 12)
+dev.off()
+```
+
+
+```{r Venetoclax Response with LM}
+colnames(df.BCL2)
+
+df.BCL2.filtered <- df.BCL2[,c(colnames(df.BCL2)[c(2, 7:27, 31:38, 96)],"auc" ,"NPM1", "FLT3")]
+
+df.BCL2.filtered <- df.BCL2.filtered[, apply(df.BCL2.filtered, 2, function(x){length(unique(x)) > 1}) %>% as.vector]
+
+df.summaries <- df.BCL2.filtered %>% 
+  dplyr::select(-auc) %>% 
+  purrr::map(~lm(normalize(df.BCL2.filtered$auc) ~ .x, data = df.BCL2.filtered)) %>% 
+  purrr::map(summary) %>% 
+  purrr::map(c("coefficients"))
+  
+pvals <- sapply(names(df.summaries), function(x){
+  res <- df.summaries[[x]][-1,4]
+  if(!is.null(names(res))){
+    names(res) <- gsub(".x", "", names(res))
+  }
+  return(res)
+}) %>% unlist
+  
+
+coefs <- sapply(names(df.summaries), function(x){
+  res <- df.summaries[[x]][-1,1]
+  if(!is.null(names(res))){
+    names(res) <- gsub(".x", "", names(res))
+  }
+  return(res)
+}) %>% unlist
+
+
+df.BCL2.plot <- data.frame(Attribute = names(pvals), p = pvals, logP= -log10(pvals), Coefficient = coefs)
+df.BCL2.plot$adjP <- p.adjust(df.BCL2.plot$p, method = "BH")
+df.BCL2.plot$log.adjP <- -log10(df.BCL2.plot$adjP)
+
+writexl::write_xlsx(df.BCL2.plot, "Supplementary Tables/Univariate_Venetoclax_Resistance.xlsx")
+
+pdf("output/Venetoclax_Response_Attributes.pdf", width = 7, height = 6)
+ggplot(df.BCL2.plot, aes(Coefficient, log.adjP, label = ifelse(adjP < 0.01, Attribute, ""), size = log.adjP)) + 
+  geom_point()  + 
+  ggrepel::geom_text_repel(size = 5, force = 30) + theme_bw(base_size = 14) + theme(legend.position = "bottom") + 
+  ylab("-log10(adj. p)") + geom_hline(yintercept = -log10(0.01), linetype='dotted', col = 'red') +
+  annotate("text", x = -4.2, y = 2.5, label = "FDR = 0.01", color = "red", size = 4) + xlab("Effect Size") +
+  labs(size = "-log10(adj. p)")
+
+dev.off()
+```
+
+
+```{r Venetoclax Multivariate Response with LM}
+df.BCL2.plot.multi <- 
+  coef(summary(lm(normalize(auc) ~ CD14.Mono + BCL2 + Sex + Origin + Age + Primary.Diagnosis +Blast + NPM1 + FLT3 + ELN, data = df.BCL2.filtered))) %>% as.data.frame
+
+colnames(df.BCL2.plot.multi)[4] <- "p"
+df.BCL2.plot.multi$logP <- -log10(df.BCL2.plot.multi$p)
+
+writexl::write_xlsx(df.BCL2.plot.multi, "Supplementary Tables/Multivariate_Venetoclax_Resistance.xlsx")
+
+# remove intercept
+df.BCL2.plot.multi <- df.BCL2.plot.multi[-1, ]
+df.BCL2.plot.multi$Attribute <- rownames(df.BCL2.plot.multi)
+
+pdf("output/Venetoclax_Response_Attributes_Multi.pdf", width = 7, height = 6)
+ggplot(df.BCL2.plot.multi, aes(Estimate, logP, label = ifelse(p < 0.05, Attribute, ""), size = logP)) + 
+  geom_point()  + 
+  ggrepel::geom_text_repel(size = 5, force = 200) + theme_bw(base_size = 14) + theme(legend.position = "bottom") + 
+  ylab("-log10(p)") + geom_hline(yintercept = -log10(0.01), linetype='dotted', col = 'red') +
+  annotate("text", x = -0.28, y = 2.2, label = "p = 0.01", color = "red", size = 4) + xlab("Effect Size") +
+  labs(size = "-log10(p)")
+
+dev.off()
+
 
 ```
 
 
+```{r}
+df_corrected <- readRDS("data/Proteomics_LUMC.RDS")
+cp <- df_corrected$matrix 
+meta <- df_corrected$meta
+rnaseqID <- strsplit(meta$rnaseqID, split = ";", fixed = T) %>% purrr::map(1) %>% unlist
+rnaseqID[70] <- "102581-003-042"
+
+
+rnaseqID <- strsplit(rnaseqID, split = "-", fixed = T) %>% lapply(function(x){
+  if(!is.na(x)) {
+    paste0("AML_", substr(x[2], 3,3 ),"_",x[3]) 
+  } else {
+    return(NA)
+  }
+}) %>% unlist
+
+
+meta$Sample <- rnaseqID
+
+# technical replicate
+meta <- meta[!rownames(meta) %in% c("F1__132N", "F3__132N", "F1__127C"),]
+meta <- meta[!is.na(meta$Sample) & meta$Tissue == "PRIM", ]
+
+
+cp <- cp[, rownames(meta)]
+
+mergedProteomics <- cbind(meta, BCL2.Proteomic = cp["P10415", ])
+
+meta.LUMC$order <- 1:nrow(meta.LUMC)
+
+meta.LUMC2 <- temp.LUMC
+
+count.LUMC.norm <- cinaR::normalizeConsensus(count.LUMC, log.option = T)
+
+meta.LUMC2$BCL2.Expression <- as.numeric(count.LUMC.norm["BCL2",])
+meta.LUMC2$CD14.Mono <- deconv.LUMC[,"CD14 Mono"]
+  
+meta.LUMC2 <- merge(meta.LUMC2, mergedProteomics, by = "Sample", all.x = T)
+
+
+library(ggpmisc)
+formula <- y ~ x
+
+cor(meta.LUMC2$BCL2.Expression, meta.LUMC2$BCL2.Proteomic, method = "spearman", use = "complete.obs")
+cor(meta.LUMC2$CD14.Mono, meta.LUMC2$BCL2.Proteomic, method = "spearman", use = "complete.obs")
+
+meta.LUMC2$`Primary Diagnosis` <- stringr::str_wrap(meta.LUMC2$`Primary Diagnosis`, width = 25)
+
+p1 <- ggplot(meta.LUMC2 %>% filter(!is.na(BCL2.Proteomic)), aes(BCL2.Expression, BCL2.Proteomic)) + 
+  geom_point(aes(color = mut),size = 3) + 
+  geom_smooth(method = "lm", se = F, size =0.5, color = "black")+ 
+  stat_poly_eq(aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")), 
+               label.x.npc = "right", label.y.npc = 0.95,
+               formula = formula, parse = TRUE, size = 5) + theme_bw(base_size = 16) +
+  xlab("BCL2 Expression (cpm)") + ylab("BCL2 Protein Abundance\n(cpm)") + labs(color = "Genetic Abnormalities") +
+  scale_color_manual(values = rev(DiscretePalette(20)))
+
+p2 <- ggplot(meta.LUMC2 %>% filter(!is.na(BCL2.Proteomic)), aes(CD14.Mono, BCL2.Proteomic)) + 
+  geom_point(aes(color = mut),size = 3) +
+  geom_smooth(method = "lm", se = F, size =0.5, color = "black")+ 
+  stat_poly_eq(aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")), 
+               label.x.npc = "right", label.y.npc = 0.95,
+               formula = formula, parse = TRUE, size = 5) + theme_bw(base_size = 16) +
+  xlab("CD14+ Mono%") + ylab("BCL2 Protein Abundance\n(cpm)") + labs(color = "Genetic Abnormalities") +
+  scale_color_manual(values = rev(DiscretePalette(20)))
+
+pdf("output/BCL2_Expression_or_Monocyte_vs_Proteomic_PD.pdf", width = 16, height = 8)
+print(ggarrange(p1, p2, common.legend = T, legend = "bottom"),newpage = F)
+dev.off()
+
+
+p3 <- ggplot(meta.LUMC2, aes(BCL2.Expression, BCL2.Proteomic)) + geom_point(aes(color = cluster), size = 3) + 
+  geom_smooth(method = "lm", se = F, size =0.5, color = "black")+ 
+  stat_poly_eq(aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")), 
+               label.x.npc = "right", label.y.npc = 0.95,
+               formula = formula, parse = TRUE, size = 5) + theme_bw(base_size = 16) +
+  xlab("BCL2 Expression (cpm)") + ylab("BCL2 Protein Abundance\n(cpm)") + labs(color = "Assignment") + 
+  scale_color_manual(values = cell.type.colors[unique(meta.LUMC2[!is.na(meta.LUMC2$BCL2.Proteomic),]$cluster)])
+
+p4 <- ggplot(meta.LUMC2, aes(CD14.Mono, BCL2.Proteomic)) + geom_point(aes(color = cluster), size = 3) + 
+    geom_smooth(method = "lm", se = F, size =0.5, color = "black")+ 
+   stat_poly_eq(aes(label = paste(..rr.label.., ..p.value.label..,
+ sep = "~~~")), 
+               label.x.npc = "right", label.y.npc = 0.95,
+               formula = formula, parse = TRUE, size = 5) + theme_bw(base_size = 16) +
+  xlab("CD14 Mono %") + ylab("BCL2 Protein Abundance\n(cpm)") + labs(color = "Assignment") + 
+  scale_color_manual(values = cell.type.colors[unique(meta.LUMC2[!is.na(meta.LUMC2$BCL2.Proteomic),]$cluster)])
+
+pdf("output/BCL2_Expression_or_Monocyte_vs_Proteomic.pdf", width = 16, height = 8)
+print(ggarrange(p3, p4, common.legend = T, legend = "bottom"),newpage = F)
+dev.off()
+```
+
+```{r}
+df_corrected <- readRDS("data/Proteomics_LUMC.RDS")
+cp <- df_corrected$matrix 
+meta <- df_corrected$meta
+rnaseqID <- strsplit(meta$rnaseqID, split = ";", fixed = T) %>% purrr::map(1) %>% unlist
+rnaseqID[70] <- "102581-003-042"
+
+
+rnaseqID <- strsplit(rnaseqID, split = "-", fixed = T) %>% lapply(function(x){
+  if(!is.na(x)) {
+    paste0("AML_", substr(x[2], 3,3 ),"_",x[3]) 
+  } else {
+    return(NA)
+  }
+}) %>% unlist
+
+
+meta$Sample <- rnaseqID
+
+# remove technical duplicates
+meta <- meta[meta$mut == "NPM1", ]
+
+# you're no npm1
+meta <- meta[!rownames(meta) %in% c("F3__129N"),]
+# technical replicate
+meta <- meta[!rownames(meta) %in% c("F1__132N", "F3__132N", "F1__127C"),]
+meta <- meta[!is.na(meta$Sample) & meta$Tissue == "PRIM", ]
+
+
+cp <- cp[, rownames(meta)]
+
+mergedProteomics <- cbind(meta, BCL2.Proteomic = cp["P10415", ])
+
+meta.LUMC$order <- 1:nrow(meta.LUMC)
+
+meta.LUMC2 <- temp.LUMC
+
+count.LUMC.norm <- cinaR::normalizeConsensus(count.LUMC, log.option = T)
+
+meta.LUMC2$BCL2.Expression <- as.numeric(count.LUMC.norm["BCL2",])
+meta.LUMC2$CD14.Mono <- deconv.LUMC[,"CD14 Mono"]
+  
+meta.LUMC2 <- merge(meta.LUMC2, mergedProteomics, by = "Sample", all.x = T)
+
+
+library(ggpmisc)
+formula <- y ~ x
+
+cor(meta.LUMC2$BCL2.Expression, meta.LUMC2$BCL2.Proteomic, method = "spearman", use = "complete.obs")
+cor(meta.LUMC2$CD14.Mono, meta.LUMC2$BCL2.Proteomic, method = "spearman", use = "complete.obs")
+
+
+p5 <- ggplot(meta.LUMC2, aes(BCL2.Expression, BCL2.Proteomic)) + geom_point(aes(color = cluster), size = 3) + 
+  geom_smooth(method = "lm", se = F, size =0.5, color = "black")+ 
+  stat_poly_eq(aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")), 
+               label.x.npc = "right", label.y.npc = 0.95,
+               formula = formula, parse = TRUE, size = 5) + theme_bw(base_size = 16) +
+  xlab("BCL2 Expression (cpm)") + ylab("BCL2 Protein Abundance\n(cpm)") + labs(color = "Assignment") + 
+  scale_color_manual(values = cell.type.colors[unique(meta.LUMC2[!is.na(meta.LUMC2$BCL2.Proteomic),]$cluster)])
+
+
+
+p6 <- ggplot(meta.LUMC2, aes(CD14.Mono, BCL2.Proteomic)) + geom_point(aes(color = cluster), size = 3) + 
+    geom_smooth(method = "lm", se = F, size =0.5, color = "black")+ 
+   stat_poly_eq(aes(label = paste(..rr.label.., ..p.value.label..,
+ sep = "~~~")), 
+               label.x.npc = "right", label.y.npc = 0.95,
+               formula = formula, parse = TRUE, size = 5) + theme_bw(base_size = 16) +
+  xlab("CD14 Mono %") + ylab("BCL2 Protein Abundance\n(cpm)") + labs(color = "Assignment") + 
+  scale_color_manual(values = cell.type.colors[unique(meta.LUMC2[!is.na(meta.LUMC2$BCL2.Proteomic),]$cluster)])
+
+pdf("output/BCL2_Expression_or_Monocyte_vs_Proteomic_NPM1.pdf", width = 16, height = 8)
+print(ggarrange(p5, p6, common.legend = T, legend = "bottom"),newpage = F)
+dev.off()
+
+```
+
+```{r}
+
+mat.meta <- meta.train[new.order.train,]
+
+idx <- rowSds(as.matrix(mat.meta[,common.mutations]), na.rm = T)
+idx[is.na(idx)] <- 0
+
+idx <- idx > 0 
+
+mat <- mat.meta[idx, common.mutations]
+mat[mat > 0] <- 1
+mat[is.na(mat)] <- 0
+
+mat.hm <- mat.meta[idx, "cluster", drop = F]
+
+mat.vec <- mat.hm$cluster
+names(mat.vec) <- rownames(mat.hm)
+pheatmap(t(mat), annotation_col = mat.hm, show_colnames = F, cluster_rows = T, cluster_cols = F,
+         annotation_colors = ann.colors, border_color = NA, 
+        gaps_col = cumsum(table(mat.vec)[unique(mat.vec)]))
+
+```
+```{r}
+colSums(meta.train[,common.mutations],na.rm = T) %>% sort(decreasing = T)
+
+
+meta.train %>% 
+  dplyr::filter(FLT3 > 0 & !duplicated(Patient) & !is.na(Age)) %>% 
+  ggplot(aes(Age, color = Sex)) + geom_density()
+```
 

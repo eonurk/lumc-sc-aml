@@ -787,6 +787,8 @@ hcabm40k <- ScaleData(hcabm40k, verbose = FALSE)
 hcabm40k <- RunPCA(hcabm40k, features = VariableFeatures(hcabm40k),verbose = FALSE)
 hcabm40k <- RunUMAP(hcabm40k, dims = 1:50)
 
+
+
 pdf("output/UMAP_Manton_samples.pdf", width = 8, height = 6)
 DimPlot(hcabm40k, shuffle = T) + theme.gg
 dev.off()
